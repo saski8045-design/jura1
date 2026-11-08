@@ -37,3 +37,368 @@ jobs:
           EOF
           cat > gradle.properties <<'EOF'
           org.gradle.jvmargs=-Xmx2g
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+          android {
+              namespace 'com.jura.assistant'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.jura.assistant'
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = '17' }
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+              <uses-permission android:name="android.permission.READ_CONTACTS"/>
+              <uses-permission android:name="android.permission.CALL_PHONE"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN"/>
+                      <category android:name="android.intent.category.LAUNCHER"/>
+                  </intent>
+                  <intent><action android:name="android.speech.RecognitionService"/></intent>
+                  <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
+              </queries>
+              <application android:label="Джура" android:theme="@android:style/Theme.DeviceDefault.Light">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".JuraService" android:exported="false" android:foregroundServiceType="microphone"/>
+              </application>
+          </manifest>
+          EOF
+          cat > app/src/main/java/com/jura/assistant/MainActivity.kt <<'EOF'
+          package com.jura.assistant
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  val l = LinearLayout(this)
+                  l.orientation = LinearLayout.VERTICAL
+                  l.setPadding(48, 96, 48, 48)
+                  val title = TextView(this)
+                  title.text = "Джура"
+                  title.textSize = 28f
+                  l.addView(title)
+                  val hint = TextView(this)
+                  hint.text = "Нажмите кнопки по порядку. Потом скажите: Джура, позвони маме. Или: Джура, открой YouTube."
+                  l.addView(hint)
+                  fun btn(t: String, a: () -> Unit) {
+                      val x = Button(this)
+                      x.text = t
+                      x.setOnClickListener { a() }
+                      l.addView(x)
+                  }
+                  btn("1. Дать разрешения") { askPerms() }
+                  btn("2. Разрешить поверх других окон") {
+                      startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
+                  }
+                  btn("3. Снять ограничения батареи") {
+                      startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                  }
+                  btn("4. Запустить Джуру") { startForegroundService(Intent(this, JuraService::class.java)) }
+                  btn("Остановить") { stopService(Intent(this, JuraService::class.java)) }
+                  setContentView(l)
+                  askPerms()
+              }
+
+              private fun askPerms() {
+                  requestPermissions(arrayOf(
+                      Manifest.permission.RECORD_AUDIO,
+                      Manifest.permission.READ_CONTACTS,
+                      Manifest.permission.CALL_PHONE,
+                      Manifest.permission.POST_NOTIFICATIONS), 1)
+              }
+          }
+          EOF
+          cat > app/src/main/java/com/jura/assistant/JuraService.kt <<'EOF'
+          package com.jura.assistant
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import android.os.PowerManager
+          import android.provider.ContactsContract
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.UtteranceProgressListener
+          import android.telecom.TelecomManager
+          import java.text.SimpleDateFormat
+          import java.util.Calendar
+          import java.util.Date
+          import java.util.Locale
+
+          class JuraService : Service(), TextToSpeech.OnInitListener {
+              private var tts: TextToSpeech? = null
+              private var rec: SpeechRecognizer? = null
+              private val h = Handler(Looper.getMainLooper())
+              private var awaiting = false
+              private var running = true
+              private var speaking = false
+              private var active = false
+              private var wl: PowerManager.WakeLock? = null
+              private val ru = Locale("ru", "RU")
+
+              override fun onBind(i: Intent?): IBinder? = null
+
+              override fun onStartCommand(i: Intent?, f: Int, id: Int): Int = START_STICKY
+
+              override fun onCreate() {
+                  super.onCreate()
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(NotificationChannel("jura", "Джура", NotificationManager.IMPORTANCE_LOW))
+                  val n = Notification.Builder(this, "jura")
+                      .setContentTitle("Джура слушает")
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .build()
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                  } else {
+                      startForeground(1, n)
+                  }
+                  val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                  wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "jura:wl")
+                  wl?.acquire()
+                  tts = TextToSpeech(this, this)
+              }
+
+              override fun onInit(s: Int) {
+                  val t = tts ?: return
+                  t.language = ru
+                  t.setPitch(0.6f)
+                  t.setSpeechRate(0.95f)
+                  t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                      override fun onStart(u: String?) {}
+                      override fun onError(u: String?) { done() }
+                      override fun onDone(u: String?) { done() }
+                  })
+                  speak("Джура к вашим услугам, сэр.")
+              }
+
+              private fun done() {
+                  h.post {
+                      speaking = false
+                      listen()
+                  }
+              }
+
+              private fun speak(s: String) {
+                  speaking = true
+                  rec?.cancel()
+                  active = false
+                  tts?.speak(s, TextToSpeech.QUEUE_FLUSH, null, "u")
+              }
+
+              private fun listen() {
+                  if (!running || speaking || active) return
+                  active = true
+                  if (rec == null) {
+                      rec = SpeechRecognizer.createSpeechRecognizer(this)
+                      rec?.setRecognitionListener(object : RecognitionListener {
+                          override fun onReadyForSpeech(p: Bundle?) {}
+                          override fun onBeginningOfSpeech() {}
+                          override fun onRmsChanged(v: Float) {}
+                          override fun onBufferReceived(b: ByteArray?) {}
+                          override fun onEndOfSpeech() {}
+                          override fun onPartialResults(p: Bundle?) {}
+                          override fun onEvent(t: Int, p: Bundle?) {}
+                          override fun onError(e: Int) {
+                              active = false
+                              h.postDelayed({ listen() }, 800)
+                          }
+                          override fun onResults(r: Bundle?) {
+                              active = false
+                              val text = r?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                              if (text != null) handle(text)
+                              h.postDelayed({ listen() }, 300)
+                          }
+                      })
+                  }
+                  val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                  i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                  i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+                  rec?.startListening(i)
+              }
+
+              private fun handle(raw: String) {
+                  val t = raw.lowercase(ru).trim()
+                  var cmd = t
+                  if (!awaiting) {
+                      val keys = listOf("джур", "жур", "дюр", "юра")
+                      var idx = -1
+                      var len = 0
+                      for (k in keys) {
+                          val p = t.indexOf(k)
+                          if (p >= 0 && (idx < 0 || p < idx)) { idx = p; len = k.length }
+                      }
+                      if (idx < 0) return
+                      cmd = t.substring(idx + len)
+                      if (cmd.isNotEmpty() && "аеуыи".indexOf(cmd[0]) >= 0 && (cmd.length == 1 || !cmd[1].isLetter())) {
+                          cmd = cmd.substring(1)
+                      }
+                  }
+                  cmd = cmd.trim(' ', ',', '.', '!')
+                  if (cmd.isEmpty()) {
+                      awaiting = true
+                      speak("Слушаю, сэр.")
+                      return
+                  }
+                  awaiting = false
+                  exec(cmd)
+              }
+
+              private fun exec(c: String) {
+                  val call = Regex("^(позвони|набери|звони|позвонить)\\s+(.+)$").find(c)
+                  val open = Regex("^(открой|открыть|запусти|зайди в|зайди|включи)\\s+(в\\s+)?(.+)$").find(c)
+                  when {
+                      call != null -> callContact(call.groupValues[2])
+                      open != null -> openApp(open.groupValues[3])
+                      c.contains("врем") -> {
+                          val cal = Calendar.getInstance()
+                          speak("Сейчас " + cal.get(Calendar.HOUR_OF_DAY) + " " + "%02d".format(cal.get(Calendar.MINUTE)) + ", сэр.")
+                      }
+                      c.contains("дата") || c.contains("число") || c.contains("день") -> {
+                          speak("Сегодня " + SimpleDateFormat("EEEE, d MMMM yyyy", ru).format(Date()) + ", сэр.")
+                      }
+                      else -> speak("Простите, сэр, я пока не понял команду.")
+                  }
+              }
+
+              private fun callContact(q: String) {
+                  val qs = q.split(" ").filter { it.length > 1 }
+                  var best: String? = null
+                  var bestName = ""
+                  var bestScore = 0
+                  try {
+                      val cur = contentResolver.query(
+                          ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                          arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER),
+                          null, null, null)
+                      if (cur != null) {
+                          while (cur.moveToNext()) {
+                              val name = cur.getString(0) ?: continue
+                              val words = name.lowercase(ru).split(" ")
+                              var score = 0
+                              var ok = qs.isNotEmpty()
+                              for (w in qs) {
+                                  var m = 0
+                                  for (x in words) {
+                                      var k = 0
+                                      while (k < w.length && k < x.length && w[k] == x[k]) k++
+                                      if (k > m) m = k
+                                  }
+                                  if (m >= minOf(3, w.length)) score += m else ok = false
+                              }
+                              if (ok && score > bestScore) {
+                                  bestScore = score
+                                  best = cur.getString(1)
+                                  bestName = name
+                              }
+                          }
+                          cur.close()
+                      }
+                  } catch (e: Exception) {}
+                  val num = best
+                  if (num == null) {
+                      speak("Не нашёл контакт " + q + ", сэр.")
+                      return
+                  }
+                  speak("Звоню, " + bestName + ", сэр.")
+                  h.postDelayed({
+                      try {
+                          getSystemService(TelecomManager::class.java).placeCall(Uri.fromParts("tel", num, null), Bundle())
+                      } catch (e: Exception) {
+                          speak("Не удалось позвонить, сэр.")
+                      }
+                  }, 1800)
+              }
+
+              private fun openApp(q0: String) {
+                  val alias = mapOf(
+                      "ютуб" to "youtube", "ютубе" to "youtube", "ютьюб" to "youtube",
+                      "ватсап" to "whatsapp", "телеграм" to "telegram", "хром" to "chrome",
+                      "гугл" to "google", "карты" to "карты", "плей маркет" to "play")
+                  val q = alias[q0.trim()] ?: q0.trim()
+                  val pm = packageManager
+                  val list = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                  var pkg: String? = null
+                  for (r in list) {
+                      val label = r.loadLabel(pm).toString().lowercase(ru)
+                      if (label.contains(q) || (q.length > 3 && q.contains(label))) {
+                          pkg = r.activityInfo.packageName
+                          break
+                      }
+                  }
+                  val p = pkg
+                  val li = if (p != null) pm.getLaunchIntentForPackage(p) else null
+                  if (li == null) {
+                      speak("Не нашёл приложение " + q0 + ", сэр.")
+                      return
+                  }
+                  speak("Открываю, сэр.")
+                  h.postDelayed({
+                      li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      try { startActivity(li) } catch (e: Exception) {}
+                  }, 1300)
+              }
+
+              override fun onDestroy() {
+                  running = false
+                  rec?.destroy()
+                  tts?.shutdown()
+                  wl?.release()
+                  super.onDestroy()
+              }
+          }
+          EOF
+      - name: Build APK
+        run: gradle assembleDebug --stacktrace
+      - name: Publish APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ github.run_number }}" app/build/outputs/apk/debug/app-debug.apk --repo "${{ github.repository }}" --title "Jura v${{ github.run_number }}" --notes "Jura APK"
