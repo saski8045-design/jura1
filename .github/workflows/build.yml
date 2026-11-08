@@ -114,7 +114,7 @@ jobs:
                   title.textSize = 28f
                   l.addView(title)
                   val hint = TextView(this)
-                  hint.text = "Нажмите кнопки по порядку. Потом скажите: Джура, позвони маме. Или: Джура, открой YouTube."
+                  hint.text = "Нажмите кнопки по порядку. Потом скажите: позвони маме. Или: открой YouTube."
                   l.addView(hint)
                   fun btn(t: String, a: () -> Unit) {
                       val x = Button(this)
@@ -181,6 +181,8 @@ jobs:
               private var running = true
               private var speaking = false
               private var active = false
+              private var lastErr = 0L
+              private val debug = true
               private var wl: PowerManager.WakeLock? = null
               private val ru = Locale("ru", "RU")
 
@@ -217,7 +219,11 @@ jobs:
                       override fun onError(u: String?) { done() }
                       override fun onDone(u: String?) { done() }
                   })
-                  speak("Джура к вашим услугам, сэр.")
+                  if (SpeechRecognizer.isRecognitionAvailable(this)) {
+                      speak("Джура к вашим услугам, сэр.")
+                  } else {
+                      speak("Распознавание речи недоступно на этом телефоне, сэр.")
+                  }
               }
 
               private fun done() {
@@ -249,6 +255,18 @@ jobs:
                           override fun onEvent(t: Int, p: Bundle?) {}
                           override fun onError(e: Int) {
                               active = false
+                              if (e == 8 || e == 5) {
+                                  rec?.destroy()
+                                  rec = null
+                              }
+                              if (e != 6 && e != 7 && e != 8) {
+                                  val now = System.currentTimeMillis()
+                                  if (now - lastErr > 20000) {
+                                      lastErr = now
+                                      speak("Ошибка распознавания, код " + e + ", сэр.")
+                                      return
+                                  }
+                              }
                               h.postDelayed({ listen() }, 800)
                           }
                           override fun onResults(r: Bundle?) {
@@ -268,6 +286,7 @@ jobs:
               private fun handle(raw: String) {
                   val t = raw.lowercase(ru).trim()
                   var cmd = t
+                  var named = awaiting
                   if (!awaiting) {
                       val keys = listOf("джур", "жур", "дюр", "юра")
                       var idx = -1
@@ -276,23 +295,31 @@ jobs:
                           val p = t.indexOf(k)
                           if (p >= 0 && (idx < 0 || p < idx)) { idx = p; len = k.length }
                       }
-                      if (idx < 0) return
-                      cmd = t.substring(idx + len)
-                      if (cmd.isNotEmpty() && "аеуыи".indexOf(cmd[0]) >= 0 && (cmd.length == 1 || !cmd[1].isLetter())) {
-                          cmd = cmd.substring(1)
+                      if (idx >= 0) {
+                          named = true
+                          cmd = t.substring(idx + len)
+                          if (cmd.isNotEmpty() && "аеуыи".indexOf(cmd[0]) >= 0 && (cmd.length == 1 || !cmd[1].isLetter())) {
+                              cmd = cmd.substring(1)
+                          }
                       }
                   }
                   cmd = cmd.trim(' ', ',', '.', '!')
-                  if (cmd.isEmpty()) {
+                  if (named && cmd.isEmpty()) {
                       awaiting = true
                       speak("Слушаю, сэр.")
                       return
                   }
                   awaiting = false
-                  exec(cmd)
+                  if (!exec(cmd)) {
+                      if (named) {
+                          speak("Простите, сэр, я не понял команду. Я услышал: " + cmd + ".")
+                      } else if (debug) {
+                          speak("Услышал: " + t + ".")
+                      }
+                  }
               }
 
-              private fun exec(c: String) {
+              private fun exec(c: String): Boolean {
                   val call = Regex("^(позвони|набери|звони|позвонить)\\s+(.+)$").find(c)
                   val open = Regex("^(открой|открыть|запусти|зайди в|зайди|включи)\\s+(в\\s+)?(.+)$").find(c)
                   when {
@@ -305,8 +332,9 @@ jobs:
                       c.contains("дата") || c.contains("число") || c.contains("день") -> {
                           speak("Сегодня " + SimpleDateFormat("EEEE, d MMMM yyyy", ru).format(Date()) + ", сэр.")
                       }
-                      else -> speak("Простите, сэр, я пока не понял команду.")
+                      else -> return false
                   }
+                  return true
               }
 
               private fun callContact(q: String) {
