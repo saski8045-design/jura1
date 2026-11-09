@@ -237,6 +237,8 @@ jobs:
               private var fatal = 0
               private var ignoreUntil = 0L
               private var speakId = 0
+              private var svcIdx = 0
+              private var cands: List<ComponentName?> = emptyList()
               private var wl: PowerManager.WakeLock? = null
               private val ru = Locale("ru", "RU")
 
@@ -311,7 +313,7 @@ jobs:
                       override fun onError(u: String?) { done() }
                       override fun onDone(u: String?) { done() }
                   })
-                  val ok = SpeechRecognizer.isRecognitionAvailable(this) || pickService() != null
+                  val ok = SpeechRecognizer.isRecognitionAvailable(this)
                   log("Распознавание доступно: " + ok)
                   if (ok) {
                       speak("Джура к вашим услугам, сэр.")
@@ -354,21 +356,27 @@ jobs:
               }
 
               @Suppress("DEPRECATION")
-              private fun pickService(): ComponentName? {
-                  return try {
+              private fun buildCands() {
+                  val res = ArrayList<ComponentName?>()
+                  try {
                       val list = packageManager.queryIntentServices(Intent("android.speech.RecognitionService"), 0)
-                      log("Службы распознавания: " + list.joinToString { it.serviceInfo.packageName })
-                      var res: ComponentName? = null
-                      for (s in list) {
-                          if (s.serviceInfo.packageName == "com.google.android.googlequicksearchbox") {
-                              res = ComponentName(s.serviceInfo.packageName, s.serviceInfo.name)
+                      log("Службы распознавания: " + list.joinToString { it.serviceInfo.packageName + "/" + it.serviceInfo.name })
+                      val pr = listOf("com.google.android.googlequicksearchbox", "com.google.android.tts")
+                      for (p in pr) {
+                          for (s in list) {
+                              if (s.serviceInfo.packageName == p) res.add(ComponentName(p, s.serviceInfo.name))
                           }
                       }
-                      res
-                  } catch (e: Exception) {
-                      log("Поиск служб: " + e)
-                      null
-                  }
+                      for (s in list) {
+                          val p = s.serviceInfo.packageName
+                          if ((p.startsWith("com.google") || p.startsWith("com.samsung")) && pr.indexOf(p) < 0) {
+                              res.add(ComponentName(p, s.serviceInfo.name))
+                          }
+                      }
+                  } catch (e: Exception) { log("Поиск служб: " + e) }
+                  res.add(null)
+                  cands = res
+                  log("Порядок попыток: " + res.size)
               }
 
               private val listener = object : RecognitionListener {
@@ -405,9 +413,10 @@ jobs:
 
               private fun createRec() {
                   try { rec?.destroy() } catch (e: Exception) {}
-                  val cn = pickService()
+                  if (cands.isEmpty()) buildCands()
+                  val cn = cands[svcIdx % cands.size]
                   rec = if (cn != null) SpeechRecognizer.createSpeechRecognizer(this, cn) else SpeechRecognizer.createSpeechRecognizer(this)
-                  log("Распознаватель создан: " + (cn?.packageName ?: "системный по умолчанию"))
+                  log("Распознаватель: " + (cn?.flattenToShortString() ?: "системный по умолчанию"))
                   rec?.setRecognitionListener(listener)
               }
 
@@ -421,16 +430,13 @@ jobs:
                       speak("Нет разрешения на микрофон, сэр. Откройте приложение и нажмите первую кнопку.")
                       return
                   }
-                  if (fatal >= 4) {
+                  svcIdx++
+                  if (fatal > cands.size + 1) {
                       running = false
                       speak("Не удаётся запустить распознавание речи, сэр. Код " + e + ". Подробности в журнале приложения.")
                       return
                   }
-                  if (fatal == 1) {
-                      speak("Ошибка распознавания, код " + e + ", " + errName(e) + ", сэр.")
-                  } else {
-                      h.postDelayed({ listen() }, 1000L * fatal)
-                  }
+                  h.postDelayed({ listen() }, 700)
               }
 
               private fun listen() {
