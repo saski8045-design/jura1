@@ -18,7 +18,7 @@ jobs:
           gradle-version: 8.5
       - name: Write project
         run: |
-          mkdir -p app/src/main/java/com/jura/assistant
+          mkdir -p app/src/main/java/com/jura/assistant app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26
           cat > settings.gradle <<'EOF'
           pluginManagement {
               repositories { google(); mavenCentral(); gradlePluginPortal() }
@@ -83,7 +83,7 @@ jobs:
                   </intent>
                   <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
               </queries>
-              <application android:label="Джура" android:theme="@android:style/Theme.DeviceDefault.Light">
+              <application android:label="JURA" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:theme="@android:style/Theme.DeviceDefault.Light">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
@@ -91,13 +91,62 @@ jobs:
                       </intent-filter>
                   </activity>
                   <service android:name=".JuraService" android:exported="false" android:foregroundServiceType="microphone"/>
-                  <service android:name=".JuraNotifService" android:exported="true" android:label="Джура" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+                  <service android:name=".JuraNotifService" android:exported="true" android:label="JURA" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
                       <intent-filter>
                           <action android:name="android.service.notification.NotificationListenerService"/>
                       </intent-filter>
                   </service>
               </application>
           </manifest>
+          EOF
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_bg"/>
+              <foreground android:drawable="@drawable/ic_fg"/>
+          </adaptive-icon>
+          EOF
+          cat > app/src/main/res/drawable/ic_bg.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#040904" android:pathData="M0,0h108v108h-108z"/>
+              <path android:fillColor="#0A1F0A" android:pathData="M54,54m-34,0a34,34 0 1,0 68,0a34,34 0 1,0 -68,0"/>
+          </vector>
+          EOF
+          cat > app/src/main/res/drawable/ic_fg.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:strokeColor="#39FF14" android:strokeWidth="2.5" android:fillColor="#00000000"
+                  android:pathData="M54,54m-26,0a26,26 0 1,0 52,0a26,26 0 1,0 -52,0"/>
+              <path android:strokeColor="#39FF14" android:strokeWidth="3.5" android:strokeLineCap="round"
+                  android:pathData="M42,50L42,58M48,45L48,63M54,40L54,68M60,45L60,63M66,50L66,58"/>
+          </vector>
+          EOF
+          cat > app/src/main/res/drawable/ic_logo.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#040904" android:pathData="M54,54m-50,0a50,50 0 1,0 100,0a50,50 0 1,0 -100,0"/>
+              <path android:fillColor="#0A1F0A" android:pathData="M54,54m-38,0a38,38 0 1,0 76,0a38,38 0 1,0 -76,0"/>
+              <path android:strokeColor="#39FF14" android:strokeWidth="2.5" android:fillColor="#00000000"
+                  android:pathData="M54,54m-28,0a28,28 0 1,0 56,0a28,28 0 1,0 -56,0"/>
+              <path android:strokeColor="#39FF14" android:strokeWidth="3.5" android:strokeLineCap="round"
+                  android:pathData="M42,50L42,58M48,45L48,63M54,40L54,68M60,45L60,63M66,50L66,58"/>
+          </vector>
+          EOF
+          cat > app/src/main/res/drawable/ic_notif.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:strokeColor="#FFFFFF" android:strokeWidth="2" android:strokeLineCap="round"
+                  android:pathData="M4,10L4,14M8,7L8,17M12,4L12,20M16,7L16,17M20,10L20,14"/>
+          </vector>
           EOF
           cat > app/src/main/java/com/jura/assistant/MainActivity.kt <<'EOF'
           package com.jura.assistant
@@ -109,7 +158,9 @@ jobs:
           import android.net.Uri
           import android.os.Bundle
           import android.provider.Settings
+          import android.view.Gravity
           import android.widget.Button
+          import android.widget.ImageView
           import android.widget.LinearLayout
           import android.widget.ScrollView
           import android.widget.TextView
@@ -124,9 +175,15 @@ jobs:
                   val l = LinearLayout(this)
                   l.orientation = LinearLayout.VERTICAL
                   l.setPadding(48, 96, 48, 48)
+                  val logo = ImageView(this)
+                  logo.setImageResource(R.drawable.ic_logo)
+                  val lp = LinearLayout.LayoutParams(360, 360)
+                  lp.gravity = Gravity.CENTER_HORIZONTAL
+                  l.addView(logo, lp)
                   val title = TextView(this)
-                  title.text = "Джура"
+                  title.text = "JURA"
                   title.textSize = 28f
+                  title.gravity = Gravity.CENTER_HORIZONTAL
                   l.addView(title)
                   val hint = TextView(this)
                   hint.text = "Нажмите кнопки по порядку. Потом скажите: который час, позвони маме, открой ютуб, кто мне написал в ватсап, смени голос."
@@ -325,10 +382,10 @@ jobs:
                   super.onCreate()
                   log("Служба создана, Android " + Build.VERSION.SDK_INT)
                   val nm = getSystemService(NotificationManager::class.java)
-                  nm.createNotificationChannel(NotificationChannel("jura", "Джура", NotificationManager.IMPORTANCE_LOW))
+                  nm.createNotificationChannel(NotificationChannel("jura", "JURA", NotificationManager.IMPORTANCE_LOW))
                   val n = Notification.Builder(this, "jura")
-                      .setContentTitle("Джура слушает")
-                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .setContentTitle("JURA слушает")
+                      .setSmallIcon(R.drawable.ic_notif)
                       .setOngoing(true)
                       .build()
                   val hasMic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
