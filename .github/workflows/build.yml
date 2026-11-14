@@ -91,6 +91,11 @@ jobs:
                       </intent-filter>
                   </activity>
                   <service android:name=".JuraService" android:exported="false" android:foregroundServiceType="microphone"/>
+                  <service android:name=".JuraNotifService" android:exported="true" android:label="Джура" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.service.notification.NotificationListenerService"/>
+                      </intent-filter>
+                  </service>
               </application>
           </manifest>
           EOF
@@ -124,7 +129,7 @@ jobs:
                   title.textSize = 28f
                   l.addView(title)
                   val hint = TextView(this)
-                  hint.text = "Нажмите кнопки по порядку. Потом скажите: который час, позвони маме, открой ютуб."
+                  hint.text = "Нажмите кнопки по порядку. Потом скажите: который час, позвони маме, открой ютуб, кто мне написал в ватсап, смени голос."
                   l.addView(hint)
                   fun btn(t: String, a: () -> Unit) {
                       val x = Button(this)
@@ -140,6 +145,9 @@ jobs:
                       startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                   }
                   btn("4. Запустить Джуру") { startJura() }
+                  btn("5. Доступ к уведомлениям") {
+                      startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+                  }
                   btn("Остановить") { stopService(Intent(this, JuraService::class.java)) }
                   btn("Обновить журнал") { showLog() }
                   btn("Очистить журнал") {
@@ -183,6 +191,65 @@ jobs:
               }
           }
           EOF
+          cat > app/src/main/java/com/jura/assistant/JuraNotif.kt <<'EOF'
+          package com.jura.assistant
+
+          import android.app.Notification
+          import android.service.notification.NotificationListenerService
+          import android.service.notification.StatusBarNotification
+
+          object NotifStore {
+              class Item(val pkg: String, val who: String, val text: String)
+
+              val whatsapp = listOf("com.whatsapp", "com.whatsapp.w4b")
+              val instagram = listOf("com.instagram.android")
+              val telegram = listOf("org.telegram.messenger", "org.telegram.messenger.web")
+              val watched = whatsapp + instagram + telegram
+
+              private val items = ArrayList<Item>()
+
+              @Synchronized
+              fun add(i: Item) {
+                  items.removeAll { it.pkg == i.pkg && it.who == i.who && it.text == i.text }
+                  items.add(i)
+                  while (items.size > 30) items.removeAt(0)
+              }
+
+              @Synchronized
+              fun recent(pk: List<String>, n: Int): List<Item> {
+                  return items.filter { pk.contains(it.pkg) }.takeLast(n).reversed()
+              }
+          }
+
+          class JuraNotifService : NotificationListenerService() {
+              override fun onListenerConnected() {
+                  try {
+                      val arr = activeNotifications
+                      if (arr != null) {
+                          for (s in arr) take(s)
+                      }
+                  } catch (e: Exception) {}
+                  JuraService.writeLog(this, "Доступ к уведомлениям работает")
+              }
+
+              override fun onNotificationPosted(sbn: StatusBarNotification?) {
+                  if (sbn != null) take(sbn)
+              }
+
+              private fun take(sbn: StatusBarNotification) {
+                  try {
+                      if (!NotifStore.watched.contains(sbn.packageName)) return
+                      val n = sbn.notification ?: return
+                      if ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
+                      val ex = n.extras ?: return
+                      val who = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+                      val text = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+                      if (text.isBlank()) return
+                      NotifStore.add(NotifStore.Item(sbn.packageName, who, text))
+                  } catch (e: Exception) {}
+              }
+          }
+          EOF
           cat > app/src/main/java/com/jura/assistant/JuraService.kt <<'EOF'
           package com.jura.assistant
 
@@ -203,8 +270,10 @@ jobs:
           import android.os.Looper
           import android.os.PowerManager
           import android.provider.ContactsContract
+          import android.provider.Settings
           import android.speech.tts.TextToSpeech
           import android.speech.tts.UtteranceProgressListener
+          import android.speech.tts.Voice
           import android.telecom.TelecomManager
           import android.util.Log
           import org.json.JSONObject
@@ -290,8 +359,8 @@ jobs:
                       ttsOk = true
                       val r = t.setLanguage(ru)
                       log("TTS русский язык, код " + r + ", модуль " + t.defaultEngine)
-                      t.setPitch(0.6f)
-                      t.setSpeechRate(0.95f)
+                      applyVoice()
+                      log("Русских голосов: " + ruVoices().size)
                       t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                           override fun onStart(u: String?) {}
                           override fun onError(u: String?) { done() }
@@ -301,6 +370,65 @@ jobs:
                       log("TTS не запустился, код " + s)
                   }
                   loadModel()
+              }
+
+              private fun ruVoices(): List<Voice> {
+                  val t = tts ?: return emptyList()
+                  return try {
+                      val all = t.getVoices() ?: emptySet<Voice>()
+                      all.filter {
+                          it.locale.language == "ru" &&
+                              !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
+                      }.sortedBy { it.name }
+                  } catch (e: Exception) {
+                      emptyList()
+                  }
+              }
+
+              private fun applyVoice() {
+                  val t = tts ?: return
+                  val p = getSharedPreferences("jura", MODE_PRIVATE)
+                  val vn = p.getString("voice", null)
+                  if (vn != null) {
+                      try {
+                          val v = ruVoices().firstOrNull { it.name == vn }
+                          if (v != null) t.setVoice(v)
+                      } catch (e: Exception) { log("Голос: " + e) }
+                  }
+                  t.setPitch(p.getFloat("pitch", 0.6f))
+                  t.setSpeechRate(p.getFloat("rate", 0.95f))
+              }
+
+              private fun changeVoice() {
+                  val t = tts ?: return
+                  val list = ruVoices()
+                  if (list.isEmpty()) {
+                      speak("Русских голосов на телефоне не нашёл, сэр.")
+                      return
+                  }
+                  if (list.size == 1) {
+                      speak("На телефоне только один русский голос, сэр. Другие можно скачать в настройках речи Google.")
+                      return
+                  }
+                  val cur = try { t.getVoice()?.name } catch (e: Exception) { null }
+                  val idx = list.indexOfFirst { it.name == cur }
+                  val next = list[(idx + 1) % list.size]
+                  try { t.setVoice(next) } catch (e: Exception) { log("Смена голоса: " + e) }
+                  getSharedPreferences("jura", MODE_PRIVATE).edit().putString("voice", next.name).apply()
+                  val num = list.indexOf(next) + 1
+                  log("Голос: " + next.name + ", " + num + " из " + list.size)
+                  speak("Теперь я говорю так, сэр. Голос " + num + " из " + list.size + ".")
+              }
+
+              private fun tune(dp: Float, dr: Float, phrase: String) {
+                  val p = getSharedPreferences("jura", MODE_PRIVATE)
+                  val pitch = (p.getFloat("pitch", 0.6f) + dp).coerceIn(0.3f, 1.5f)
+                  val rate = (p.getFloat("rate", 0.95f) + dr).coerceIn(0.5f, 1.6f)
+                  p.edit().putFloat("pitch", pitch).putFloat("rate", rate).apply()
+                  tts?.setPitch(pitch)
+                  tts?.setSpeechRate(rate)
+                  log("Высота " + pitch + ", скорость " + rate)
+                  speak(phrase)
               }
 
               private fun loadModel() {
@@ -348,7 +476,7 @@ jobs:
                           log("Синтезатор не ответил, продолжаю")
                           done()
                       }
-                  }, 20000)
+                  }, 30000)
               }
 
               private val listener = object : RecognitionListener {
@@ -440,6 +568,13 @@ jobs:
                   when {
                       call != null -> callContact(call.groupValues[2])
                       open != null -> openApp(open.groupValues[3])
+                      c.contains("голос") && (c.contains("смени") || c.contains("поменя") || c.contains("друго")) -> changeVoice()
+                      c.contains("ниже") && (c.contains("говори") || c.contains("голос")) -> tune(-0.15f, 0f, "Говорю ниже, сэр.")
+                      c.contains("выше") && (c.contains("говори") || c.contains("голос")) -> tune(0.15f, 0f, "Говорю выше, сэр.")
+                      c.contains("быстрее") && c.contains("говори") -> tune(0f, 0.15f, "Говорю быстрее, сэр.")
+                      c.contains("медленнее") && c.contains("говори") -> tune(0f, -0.15f, "Говорю медленнее, сэр.")
+                      c.contains("написал") || c.contains("сообщени") || c.contains("уведомлен") || c.startsWith("прочитай") -> readNotifs(c)
+                      c.contains("умеешь") -> speak("Я умею говорить время и дату, звонить контактам, открывать приложения, читать сообщения из мессенджеров и менять голос, сэр.")
                       c.contains("врем") -> {
                           val cal = Calendar.getInstance()
                           speak("Сейчас " + cal.get(Calendar.HOUR_OF_DAY) + " " + "%02d".format(cal.get(Calendar.MINUTE)) + ", сэр.")
@@ -450,6 +585,31 @@ jobs:
                       else -> return false
                   }
                   return true
+              }
+
+              private fun readNotifs(c: String) {
+                  val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: ""
+                  if (!enabled.contains(packageName)) {
+                      speak("Нет доступа к уведомлениям, сэр. Откройте приложение и нажмите кнопку пять.")
+                      return
+                  }
+                  var pk = NotifStore.watched
+                  var name = "мессенджерах"
+                  when {
+                      c.contains("ватсап") || c.contains("вацап") || c.contains("whatsapp") -> { pk = NotifStore.whatsapp; name = "WhatsApp" }
+                      c.contains("инст") -> { pk = NotifStore.instagram; name = "Instagram" }
+                      c.contains("телег") -> { pk = NotifStore.telegram; name = "Telegram" }
+                  }
+                  val list = NotifStore.recent(pk, 5)
+                  if (list.isEmpty()) {
+                      speak("В " + name + " новых сообщений нет, сэр.")
+                      return
+                  }
+                  val sb = StringBuilder("В " + name + ": ")
+                  for (m in list) {
+                      sb.append(m.who).append(": ").append(m.text.take(150)).append(". ")
+                  }
+                  speak(sb.toString())
               }
 
               private fun callContact(q: String) {
@@ -503,11 +663,29 @@ jobs:
               }
 
               private fun openApp(q0: String) {
-                  val alias = mapOf(
-                      "ютуб" to "youtube", "ютубе" to "youtube", "ютьюб" to "youtube",
-                      "ватсап" to "whatsapp", "телеграм" to "telegram", "хром" to "chrome",
-                      "гугл" to "google", "карты" to "карты", "плей маркет" to "play")
-                  val q = alias[q0.trim()] ?: q0.trim()
+                  val raw = q0.trim()
+                  val alias = listOf(
+                      "ютуб" to "youtube", "ютьюб" to "youtube",
+                      "ватсап" to "whatsapp", "вацап" to "whatsapp",
+                      "телеграм" to "telegram", "хром" to "chrome",
+                      "гугл" to "google", "плей маркет" to "play",
+                      "инста" to "instagram",
+                      "чат" to "chatgpt",
+                      "клод" to "claude", "клауд" to "claude",
+                      "легенд" to "mobile legends", "мобайл" to "mobile legends",
+                      "дота" to "dota")
+                  var q = raw
+                  for (a in alias) {
+                      if (raw.contains(a.first)) { q = a.second; break }
+                  }
+                  val pkgs = mapOf(
+                      "instagram" to "com.instagram.android",
+                      "chatgpt" to "com.openai.chatgpt",
+                      "claude" to "com.anthropic.claude",
+                      "mobile legends" to "com.mobile.legends",
+                      "whatsapp" to "com.whatsapp",
+                      "telegram" to "org.telegram.messenger",
+                      "youtube" to "com.google.android.youtube")
                   val pm = packageManager
                   val list = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
                   var pkg: String? = null
@@ -518,16 +696,20 @@ jobs:
                           break
                       }
                   }
-                  val p = pkg
-                  val li = if (p != null) pm.getLaunchIntentForPackage(p) else null
+                  var li = if (pkg != null) pm.getLaunchIntentForPackage(pkg) else null
                   if (li == null) {
+                      val fb = pkgs[q]
+                      if (fb != null) li = pm.getLaunchIntentForPackage(fb)
+                  }
+                  val go = li
+                  if (go == null) {
                       speak("Не нашёл приложение " + q0 + ", сэр.")
                       return
                   }
                   speak("Открываю, сэр.")
                   h.postDelayed({
-                      li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                      try { startActivity(li) } catch (e: Exception) { log("Запуск: " + e) }
+                      go.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      try { startActivity(go) } catch (e: Exception) { log("Запуск: " + e) }
                   }, 1300)
               }
 
