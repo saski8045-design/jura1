@@ -238,6 +238,8 @@ jobs:
               private var ignoreUntil = 0L
               private var speakId = 0
               private var svcIdx = 0
+              private var ready = false
+              private var listenId = 0
               private var cands: List<ComponentName?> = emptyList()
               private var wl: PowerManager.WakeLock? = null
               private val ru = Locale("ru", "RU")
@@ -361,7 +363,7 @@ jobs:
                   try {
                       val list = packageManager.queryIntentServices(Intent("android.speech.RecognitionService"), 0)
                       log("Службы распознавания: " + list.joinToString { it.serviceInfo.packageName + "/" + it.serviceInfo.name })
-                      val pr = listOf("com.google.android.googlequicksearchbox", "com.google.android.tts")
+                      val pr = listOf("com.google.android.googlequicksearchbox")
                       for (p in pr) {
                           for (s in list) {
                               if (s.serviceInfo.packageName == p) res.add(ComponentName(p, s.serviceInfo.name))
@@ -369,7 +371,7 @@ jobs:
                       }
                       for (s in list) {
                           val p = s.serviceInfo.packageName
-                          if ((p.startsWith("com.google") || p.startsWith("com.samsung")) && pr.indexOf(p) < 0) {
+                          if (p != "com.google.android.tts" && pr.indexOf(p) < 0) {
                               res.add(ComponentName(p, s.serviceInfo.name))
                           }
                       }
@@ -380,7 +382,7 @@ jobs:
               }
 
               private val listener = object : RecognitionListener {
-                  override fun onReadyForSpeech(p: Bundle?) {}
+                  override fun onReadyForSpeech(p: Bundle?) { ready = true }
                   override fun onBeginningOfSpeech() { fatal = 0 }
                   override fun onRmsChanged(v: Float) {}
                   override fun onBufferReceived(b: ByteArray?) {}
@@ -451,7 +453,17 @@ jobs:
                   i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
                   try {
                       active = true
+                      ready = false
+                      listenId++
+                      val my = listenId
                       rec?.startListening(i)
+                      h.postDelayed({
+                          if (my == listenId && active && !ready) {
+                              log("Распознаватель молчит, пробую другой")
+                              active = false
+                              onFatal(5)
+                          }
+                      }, 6000)
                   } catch (e: Exception) {
                       active = false
                       log("startListening исключение: " + e)
