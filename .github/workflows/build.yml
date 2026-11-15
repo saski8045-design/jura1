@@ -9,6 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -18,7 +19,7 @@ jobs:
           gradle-version: 8.5
       - name: Write project
         run: |
-          mkdir -p app/src/main/java/com/jura/assistant app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26
+          mkdir -p app/src/main/java/com/jura/assistant app/src/main/res/drawable app/src/main/res/drawable-nodpi app/src/main/res/mipmap-anydpi-v26
           cat > settings.gradle <<'EOF'
           pluginManagement {
               repositories { google(); mavenCentral(); gradlePluginPortal() }
@@ -76,6 +77,8 @@ jobs:
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
               <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
               <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
               <queries>
                   <intent>
                       <action android:name="android.intent.action.MAIN"/>
@@ -84,12 +87,13 @@ jobs:
                   <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
               </queries>
               <application android:label="JURA" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:theme="@android:style/Theme.DeviceDefault.Light">
-                  <activity android:name=".MainActivity" android:exported="true">
+                  <activity android:name=".MainActivity" android:exported="true" android:theme="@android:style/Theme.DeviceDefault.NoActionBar" android:windowSoftInputMode="adjustPan">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
                           <category android:name="android.intent.category.LAUNCHER"/>
                       </intent-filter>
                   </activity>
+                  <activity android:name=".SettingsActivity" android:exported="false" android:theme="@android:style/Theme.DeviceDefault.NoActionBar"/>
                   <service android:name=".JuraService" android:exported="false" android:foregroundServiceType="microphone"/>
                   <service android:name=".JuraNotifService" android:exported="true" android:label="JURA" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
                       <intent-filter>
@@ -148,52 +152,341 @@ jobs:
                   android:pathData="M4,10L4,14M8,7L8,17M12,4L12,20M16,7L16,17M20,10L20,14"/>
           </vector>
           EOF
+          cat > app/src/main/java/com/jura/assistant/Prof.kt <<'EOF'
+          package com.jura.assistant
+
+          object Prof {
+              val names = listOf("Джарвис", "Бас", "Пятница")
+              val pitch = listOf(0.6f, 0.4f, 1.15f)
+              val rate = listOf(0.92f, 0.85f, 1.05f)
+          }
+          EOF
           cat > app/src/main/java/com/jura/assistant/MainActivity.kt <<'EOF'
+          package com.jura.assistant
+
+          import android.Manifest
+          import android.app.Activity
+          import android.app.ActivityManager
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.text.TextUtils
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.inputmethod.EditorInfo
+          import android.widget.EditText
+          import android.widget.ImageView
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class Fr(ctx: Context) : ViewGroup(ctx) {
+              private val rects = ArrayList<FloatArray>()
+
+              fun put(v: View, x0: Float, y0: Float, x1: Float, y1: Float) {
+                  addView(v)
+                  rects.add(floatArrayOf(x0, y0, x1, y1))
+              }
+
+              override fun onMeasure(w: Int, h: Int) {
+                  val ww = View.MeasureSpec.getSize(w)
+                  val hh = View.MeasureSpec.getSize(h)
+                  setMeasuredDimension(ww, hh)
+                  for (i in 0 until childCount) {
+                      val r = rects[i]
+                      getChildAt(i).measure(
+                          View.MeasureSpec.makeMeasureSpec(((r[2] - r[0]) * ww).toInt(), View.MeasureSpec.EXACTLY),
+                          View.MeasureSpec.makeMeasureSpec(((r[3] - r[1]) * hh).toInt(), View.MeasureSpec.EXACTLY))
+                  }
+              }
+
+              override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+                  val ww = r - l
+                  val hh = b - t
+                  for (i in 0 until childCount) {
+                      val q = rects[i]
+                      getChildAt(i).layout((q[0] * ww).toInt(), (q[1] * hh).toInt(), (q[2] * ww).toInt(), (q[3] * hh).toInt())
+                  }
+              }
+          }
+
+          class MainActivity : Activity() {
+              private val h = Handler(Looper.getMainLooper())
+              private lateinit var st1: TextView
+              private lateinit var st2: TextView
+              private val tick = object : Runnable {
+                  override fun run() {
+                      refresh()
+                      h.postDelayed(this, 700)
+                  }
+              }
+
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  window.statusBarColor = Color.BLACK
+                  window.navigationBarColor = Color.BLACK
+                  val green = Color.parseColor("#39FF14")
+                  val white = Color.WHITE
+                  val root = Fr(this)
+                  root.setBackgroundColor(Color.parseColor("#000A00"))
+                  val bgId = resources.getIdentifier("jura_bg", "drawable", packageName)
+                  val hasBg = bgId != 0
+
+                  fun label(t: String, sp: Float, color: Int, bold: Boolean): TextView {
+                      val v = TextView(this)
+                      v.text = t
+                      v.textSize = sp
+                      v.setTextColor(color)
+                      v.gravity = Gravity.CENTER
+                      v.setSingleLine(true)
+                      v.ellipsize = TextUtils.TruncateAt.END
+                      v.includeFontPadding = false
+                      if (bold) v.setTypeface(null, Typeface.BOLD)
+                      return v
+                  }
+
+                  fun patch(x0: Float, y0: Float, x1: Float, y1: Float, color: String) {
+                      val v = View(this)
+                      v.setBackgroundColor(Color.parseColor(color))
+                      root.put(v, x0, y0, x1, y1)
+                  }
+
+                  if (hasBg) {
+                      val bg = ImageView(this)
+                      bg.scaleType = ImageView.ScaleType.FIT_XY
+                      bg.setImageResource(bgId)
+                      root.put(bg, 0f, 0f, 1f, 1f)
+                      patch(0.352f, 0.0406f, 0.652f, 0.0759f, "#000200")
+                      patch(0.2854f, 0.0781f, 0.7134f, 0.0973f, "#010401")
+                      patch(0.2378f, 0.5294f, 0.761f, 0.5882f, "#000A00")
+                      patch(0.0856f, 0.8824f, 0.2735f, 0.9091f, "#000700")
+                  } else {
+                      val logo = ImageView(this)
+                      logo.scaleType = ImageView.ScaleType.FIT_CENTER
+                      logo.setImageResource(R.drawable.ic_logo)
+                      root.put(logo, 0.25f, 0.17f, 0.75f, 0.37f)
+                  }
+
+                  root.put(label("JURA", 28f, green, true), 0.30f, 0.040f, 0.70f, 0.076f)
+                  root.put(label("Ваш голосовой помощник", 12f, white, false), 0.15f, 0.0781f, 0.85f, 0.0973f)
+                  st1 = label("", 20f, green, true)
+                  st2 = label("", 15f, white, false)
+                  root.put(st1, 0.2f, 0.531f, 0.8f, 0.561f)
+                  root.put(st2, 0.2f, 0.562f, 0.8f, 0.592f)
+
+                  val toSettings = View.OnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
+                  val menu = View(this)
+                  menu.setOnClickListener(toSettings)
+                  root.put(menu, 0.02f, 0.035f, 0.14f, 0.085f)
+                  val gear = View(this)
+                  gear.setOnClickListener(toSettings)
+                  root.put(gear, 0.86f, 0.035f, 0.98f, 0.085f)
+                  val dots = View(this)
+                  dots.setOnClickListener(toSettings)
+                  root.put(dots, 0.84f, 0.872f, 0.96f, 0.918f)
+                  val mic = View(this)
+                  mic.setOnClickListener { toggle() }
+                  root.put(mic, 0.30f, 0.20f, 0.70f, 0.34f)
+
+                  val ed = EditText(this)
+                  ed.hint = "Поиск"
+                  ed.setHintTextColor(Color.parseColor("#CCFFFFFF"))
+                  ed.setTextColor(white)
+                  ed.textSize = 16f
+                  ed.setBackgroundColor(Color.TRANSPARENT)
+                  ed.setSingleLine(true)
+                  ed.imeOptions = EditorInfo.IME_ACTION_SEARCH
+                  ed.setPadding(0, 0, 0, 0)
+                  ed.setOnEditorActionListener { v, actionId, _ ->
+                      if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                          val q = v.text.toString().trim()
+                          if (q.isNotEmpty()) {
+                              try {
+                                  startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + Uri.encode(q))))
+                              } catch (e: Exception) {}
+                          }
+                          true
+                      } else {
+                          false
+                      }
+                  }
+                  root.put(ed, 0.09f, 0.8765f, 0.82f, 0.9135f)
+
+                  setContentView(root)
+                  askPerms()
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  h.removeCallbacks(tick)
+                  h.post(tick)
+              }
+
+              override fun onPause() {
+                  super.onPause()
+                  h.removeCallbacks(tick)
+              }
+
+              @Suppress("DEPRECATION")
+              private fun running(): Boolean {
+                  return try {
+                      val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                      am.getRunningServices(100).any { it.service.className == JuraService::class.java.name }
+                  } catch (e: Exception) {
+                      false
+                  }
+              }
+
+              private fun refresh() {
+                  if (!running()) {
+                      st1.text = "JURA выключен"
+                      st2.text = "Нажмите на микрофон"
+                      return
+                  }
+                  val p = getSharedPreferences("jura", MODE_PRIVATE)
+                  st1.text = p.getString("state", "Загрузка")
+                  st2.text = p.getString("phrase", "")
+              }
+
+              private fun toggle() {
+                  if (running()) {
+                      stopService(Intent(this, JuraService::class.java))
+                  } else {
+                      startJura()
+                  }
+                  h.postDelayed({ refresh() }, 400)
+              }
+
+              private fun startJura() {
+                  if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                      Toast.makeText(this, "Откройте настройки (шестерёнка) и нажмите 1", Toast.LENGTH_LONG).show()
+                      askPerms()
+                      return
+                  }
+                  startForegroundService(Intent(this, JuraService::class.java))
+              }
+
+              private fun askPerms() {
+                  val perms = ArrayList<String>()
+                  perms.add(Manifest.permission.RECORD_AUDIO)
+                  perms.add(Manifest.permission.READ_CONTACTS)
+                  perms.add(Manifest.permission.CALL_PHONE)
+                  perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      perms.add(Manifest.permission.READ_MEDIA_AUDIO)
+                  } else {
+                      perms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+                  }
+                  requestPermissions(perms.toTypedArray(), 1)
+              }
+          }
+          EOF
+          cat > app/src/main/java/com/jura/assistant/SettingsActivity.kt <<'EOF'
           package com.jura.assistant
 
           import android.Manifest
           import android.app.Activity
           import android.content.Intent
           import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
           import android.net.Uri
+          import android.os.Build
           import android.os.Bundle
           import android.provider.Settings
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.Voice
           import android.view.Gravity
+          import android.view.ViewGroup
           import android.widget.Button
           import android.widget.ImageView
           import android.widget.LinearLayout
           import android.widget.ScrollView
           import android.widget.TextView
           import android.widget.Toast
+          import java.util.Locale
 
-          class MainActivity : Activity() {
+          class SettingsActivity : Activity() {
               private lateinit var logView: TextView
+              private lateinit var voiceView: TextView
+              private var tts: TextToSpeech? = null
+              private var ttsReady = false
+              private val green = Color.parseColor("#39FF14")
 
               override fun onCreate(b: Bundle?) {
                   super.onCreate(b)
+                  window.statusBarColor = Color.BLACK
+                  window.navigationBarColor = Color.BLACK
                   val sv = ScrollView(this)
+                  sv.setBackgroundColor(Color.parseColor("#040904"))
                   val l = LinearLayout(this)
                   l.orientation = LinearLayout.VERTICAL
-                  l.setPadding(48, 96, 48, 48)
-                  val logo = ImageView(this)
-                  logo.setImageResource(R.drawable.ic_logo)
-                  val lp = LinearLayout.LayoutParams(360, 360)
-                  lp.gravity = Gravity.CENTER_HORIZONTAL
-                  l.addView(logo, lp)
-                  val title = TextView(this)
-                  title.text = "JURA"
-                  title.textSize = 28f
-                  title.gravity = Gravity.CENTER_HORIZONTAL
-                  l.addView(title)
-                  val hint = TextView(this)
-                  hint.text = "Нажмите кнопки по порядку. Потом скажите: который час, позвони маме, открой ютуб, кто мне написал в ватсап, найди в гугле, доброе утро, повтори, смени голос."
-                  l.addView(hint)
+                  l.setPadding(48, 96, 48, 64)
+
+                  fun lp(top: Int): LinearLayout.LayoutParams {
+                      val p = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                      p.topMargin = top
+                      return p
+                  }
+
+                  fun head(t: String) {
+                      val v = TextView(this)
+                      v.text = t
+                      v.textSize = 18f
+                      v.setTextColor(green)
+                      v.setTypeface(null, Typeface.BOLD)
+                      l.addView(v, lp(48))
+                  }
+
+                  fun note(t: String): TextView {
+                      val v = TextView(this)
+                      v.text = t
+                      v.textSize = 14f
+                      v.setTextColor(Color.parseColor("#CFE8CF"))
+                      l.addView(v, lp(8))
+                      return v
+                  }
+
                   fun btn(t: String, a: () -> Unit) {
                       val x = Button(this)
                       x.text = t
+                      x.isAllCaps = false
+                      x.setTextColor(green)
+                      val gd = GradientDrawable()
+                      gd.setColor(Color.parseColor("#0A1F0A"))
+                      gd.setStroke(3, green)
+                      gd.cornerRadius = 48f
+                      x.background = gd
                       x.setOnClickListener { a() }
-                      l.addView(x)
+                      l.addView(x, lp(16))
                   }
+
+                  btn("← Назад") { finish() }
+
+                  val logo = ImageView(this)
+                  logo.setImageResource(R.drawable.ic_logo)
+                  val llp = LinearLayout.LayoutParams(260, 260)
+                  llp.gravity = Gravity.CENTER_HORIZONTAL
+                  llp.topMargin = 24
+                  l.addView(logo, llp)
+                  val title = TextView(this)
+                  title.text = "JURA: настройки"
+                  title.textSize = 24f
+                  title.setTextColor(green)
+                  title.setTypeface(null, Typeface.BOLD)
+                  title.gravity = Gravity.CENTER_HORIZONTAL
+                  l.addView(title, lp(8))
+
+                  head("Первая настройка")
+                  note("Нажмите по порядку 1, 2, 3, 5, потом вернитесь назад и нажмите на микрофон.")
                   btn("1. Дать разрешения") { askPerms() }
                   btn("2. Разрешить поверх других окон") {
                       startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
@@ -201,11 +494,22 @@ jobs:
                   btn("3. Снять ограничения батареи") {
                       startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                   }
-                  btn("4. Запустить Джуру") { startJura() }
                   btn("5. Доступ к уведомлениям") {
                       startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
                   }
+
+                  head("Запуск")
+                  btn("4. Запустить Джуру") { startJura() }
                   btn("Остановить") { stopService(Intent(this, JuraService::class.java)) }
+
+                  head("Голос")
+                  voiceView = note("")
+                  for (i in Prof.names.indices) {
+                      btn("Голос: " + Prof.names[i]) { pick(i) }
+                  }
+                  note("Голосом: «Джура, поменяй голос».")
+
+                  head("Журнал")
                   btn("Обновить журнал") { showLog() }
                   btn("Очистить журнал") {
                       getSharedPreferences("jura", MODE_PRIVATE).edit().remove("log").apply()
@@ -213,21 +517,66 @@ jobs:
                   }
                   logView = TextView(this)
                   logView.textSize = 12f
+                  logView.setTextColor(Color.parseColor("#CFE8CF"))
                   logView.setTextIsSelectable(true)
-                  l.addView(logView)
+                  l.addView(logView, lp(16))
+
                   sv.addView(l)
                   setContentView(sv)
-                  askPerms()
+                  tts = TextToSpeech(this) { s ->
+                      if (s == TextToSpeech.SUCCESS) {
+                          tts?.setLanguage(Locale("ru", "RU"))
+                          ttsReady = true
+                      }
+                  }
                   showLog()
+                  showVoice()
               }
 
               override fun onResume() {
                   super.onResume()
                   showLog()
+                  showVoice()
+              }
+
+              override fun onDestroy() {
+                  try { tts?.shutdown() } catch (e: Exception) {}
+                  super.onDestroy()
               }
 
               private fun showLog() {
                   logView.text = getSharedPreferences("jura", MODE_PRIVATE).getString("log", "Журнал пуст")
+              }
+
+              private fun showVoice() {
+                  val i = getSharedPreferences("jura", MODE_PRIVATE).getInt("profile", 0).coerceIn(0, Prof.names.size - 1)
+                  voiceView.text = "Сейчас: " + Prof.names[i]
+              }
+
+              private fun ruVoices(t: TextToSpeech): List<Voice> {
+                  return try {
+                      val all = t.voices ?: emptySet<Voice>()
+                      all.filter {
+                          it.locale.language == "ru" &&
+                              !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
+                      }.sortedBy { it.name }
+                  } catch (e: Exception) {
+                      emptyList()
+                  }
+              }
+
+              private fun pick(i: Int) {
+                  getSharedPreferences("jura", MODE_PRIVATE).edit().putInt("profile", i).remove("pitch").remove("rate").apply()
+                  showVoice()
+                  val t = tts
+                  if (t == null || !ttsReady) return
+                  try {
+                      val vs = ruVoices(t)
+                      if (vs.isNotEmpty()) t.voice = vs[i % vs.size]
+                  } catch (e: Exception) {}
+                  t.setPitch(Prof.pitch[i])
+                  t.setSpeechRate(Prof.rate[i])
+                  t.speak("Я Джура, к вашим услугам, сэр.", TextToSpeech.QUEUE_FLUSH, null, "p")
               }
 
               private fun startJura() {
@@ -240,11 +589,17 @@ jobs:
               }
 
               private fun askPerms() {
-                  requestPermissions(arrayOf(
-                      Manifest.permission.RECORD_AUDIO,
-                      Manifest.permission.READ_CONTACTS,
-                      Manifest.permission.CALL_PHONE,
-                      Manifest.permission.POST_NOTIFICATIONS), 1)
+                  val perms = ArrayList<String>()
+                  perms.add(Manifest.permission.RECORD_AUDIO)
+                  perms.add(Manifest.permission.READ_CONTACTS)
+                  perms.add(Manifest.permission.CALL_PHONE)
+                  perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      perms.add(Manifest.permission.READ_MEDIA_AUDIO)
+                  } else {
+                      perms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+                  }
+                  requestPermissions(perms.toTypedArray(), 1)
               }
           }
           EOF
@@ -315,10 +670,15 @@ jobs:
           import android.app.NotificationChannel
           import android.app.NotificationManager
           import android.app.Service
+          import android.content.ContentUris
           import android.content.Context
           import android.content.Intent
+          import android.content.SharedPreferences
           import android.content.pm.PackageManager
           import android.content.pm.ServiceInfo
+          import android.media.AudioAttributes
+          import android.media.AudioManager
+          import android.media.MediaPlayer
           import android.net.Uri
           import android.os.Build
           import android.os.Bundle
@@ -327,6 +687,7 @@ jobs:
           import android.os.Looper
           import android.os.PowerManager
           import android.provider.ContactsContract
+          import android.provider.MediaStore
           import android.provider.Settings
           import android.speech.tts.TextToSpeech
           import android.speech.tts.UtteranceProgressListener
@@ -375,7 +736,23 @@ jobs:
               private var wl: PowerManager.WakeLock? = null
               private val ru = Locale("ru", "RU")
 
+              private var player: MediaPlayer? = null
+              private var tracks: List<Pair<Uri, String>> = emptyList()
+              private var trackIdx = 0
+              private var musicFail = 0
+              private val musicVol = 0.6f
+
+              private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                  if (key == "profile") h.post { applyVoice() }
+              }
+
               private fun log(m: String) { writeLog(this, m) }
+
+              private fun setState(s: String, p: String) {
+                  try {
+                      getSharedPreferences("jura", MODE_PRIVATE).edit().putString("state", s).putString("phrase", p).apply()
+                  } catch (e: Exception) {}
+              }
 
               override fun onBind(i: Intent?): IBinder? = null
 
@@ -384,6 +761,8 @@ jobs:
               override fun onCreate() {
                   super.onCreate()
                   log("Служба создана, Android " + Build.VERSION.SDK_INT)
+                  setState("Загрузка", "Загружаю модель распознавания")
+                  getSharedPreferences("jura", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(prefListener)
                   val nm = getSystemService(NotificationManager::class.java)
                   nm.createNotificationChannel(NotificationChannel("jura", "JURA", NotificationManager.IMPORTANCE_LOW))
                   val n = Notification.Builder(this, "jura")
@@ -448,42 +827,29 @@ jobs:
               private fun applyVoice() {
                   val t = tts ?: return
                   val p = getSharedPreferences("jura", MODE_PRIVATE)
-                  val vn = p.getString("voice", null)
-                  if (vn != null) {
-                      try {
-                          val v = ruVoices().firstOrNull { it.name == vn }
-                          if (v != null) t.setVoice(v)
-                      } catch (e: Exception) { log("Голос: " + e) }
-                  }
-                  t.setPitch(p.getFloat("pitch", 0.6f))
-                  t.setSpeechRate(p.getFloat("rate", 0.95f))
+                  val idx = p.getInt("profile", 0).coerceIn(0, Prof.names.size - 1)
+                  try {
+                      val vs = ruVoices()
+                      if (vs.isNotEmpty()) t.setVoice(vs[idx % vs.size])
+                  } catch (e: Exception) { log("Голос: " + e) }
+                  t.setPitch(p.getFloat("pitch", Prof.pitch[idx]))
+                  t.setSpeechRate(p.getFloat("rate", Prof.rate[idx]))
               }
 
               private fun changeVoice() {
-                  val t = tts ?: return
-                  val list = ruVoices()
-                  if (list.isEmpty()) {
-                      speak("Русских голосов на телефоне не нашёл, сэр.")
-                      return
-                  }
-                  if (list.size == 1) {
-                      speak("На телефоне только один русский голос, сэр. Другие можно скачать в настройках речи Google.")
-                      return
-                  }
-                  val cur = try { t.getVoice()?.name } catch (e: Exception) { null }
-                  val idx = list.indexOfFirst { it.name == cur }
-                  val next = list[(idx + 1) % list.size]
-                  try { t.setVoice(next) } catch (e: Exception) { log("Смена голоса: " + e) }
-                  getSharedPreferences("jura", MODE_PRIVATE).edit().putString("voice", next.name).apply()
-                  val num = list.indexOf(next) + 1
-                  log("Голос: " + next.name + ", " + num + " из " + list.size)
-                  speak("Теперь я говорю так, сэр. Голос " + num + " из " + list.size + ".")
+                  val p = getSharedPreferences("jura", MODE_PRIVATE)
+                  val idx = (p.getInt("profile", 0) + 1) % Prof.names.size
+                  p.edit().putInt("profile", idx).remove("pitch").remove("rate").apply()
+                  applyVoice()
+                  log("Голос: " + Prof.names[idx])
+                  speak("Теперь я говорю так, сэр. Это голос " + Prof.names[idx] + ".")
               }
 
               private fun tune(dp: Float, dr: Float, phrase: String) {
                   val p = getSharedPreferences("jura", MODE_PRIVATE)
-                  val pitch = (p.getFloat("pitch", 0.6f) + dp).coerceIn(0.3f, 1.5f)
-                  val rate = (p.getFloat("rate", 0.95f) + dr).coerceIn(0.5f, 1.6f)
+                  val idx = p.getInt("profile", 0).coerceIn(0, Prof.names.size - 1)
+                  val pitch = (p.getFloat("pitch", Prof.pitch[idx]) + dp).coerceIn(0.3f, 1.5f)
+                  val rate = (p.getFloat("rate", Prof.rate[idx]) + dr).coerceIn(0.5f, 1.6f)
                   p.edit().putFloat("pitch", pitch).putFloat("rate", rate).apply()
                   tts?.setPitch(pitch)
                   tts?.setSpeechRate(rate)
@@ -515,6 +881,7 @@ jobs:
               private fun done() {
                   h.post {
                       speaking = false
+                      duck(false)
                       if (!running) stopSelf() else startRec()
                   }
               }
@@ -522,12 +889,15 @@ jobs:
               private fun speak(s: String, remember: Boolean = true) {
                   log("Говорю: " + s)
                   if (remember) last = s
+                  setState("Говорю", s.take(90))
                   speakId++
                   val my = speakId
                   speaking = true
+                  duck(true)
                   try { svc?.setPause(true) } catch (e: Exception) {}
                   if (tts == null || !ttsOk) {
                       speaking = false
+                      duck(false)
                       if (!running) stopSelf() else startRec()
                       return
                   }
@@ -562,6 +932,7 @@ jobs:
               private fun startRec() {
                   val m = model ?: return
                   if (!running) return
+                  setState("Слушаю", "Скажите: Джура ...")
                   val cur = svc
                   if (cur != null) {
                       try { cur.setPause(false) } catch (e: Exception) { log("Пауза: " + e) }
@@ -587,6 +958,7 @@ jobs:
                   if (text.isBlank()) return
                   errCount = 0
                   log("Услышал: " + text)
+                  setState("Услышал", text.take(90))
                   handle(text)
               }
 
@@ -595,7 +967,7 @@ jobs:
                   var cmd = t
                   var named = awaiting
                   if (!awaiting) {
-                      val keys = listOf("джур", "жур", "дюр", "юра", "дур", "жор")
+                      val keys = listOf("джарвис", "жарвис", "джур", "жур", "дюр", "юра", "дур", "жор")
                       var idx = -1
                       var len = 0
                       for (k in keys) {
@@ -611,6 +983,7 @@ jobs:
                       }
                   }
                   cmd = cmd.trim(' ', ',', '.', '!')
+                  if (!named && musicOn()) return
                   if (named && cmd.isEmpty()) {
                       awaiting = true
                       speak("Слушаю, сэр.", false)
@@ -624,6 +997,7 @@ jobs:
               }
 
               private fun exec(c: String): Boolean {
+                  if (musicCmd(c)) return true
                   val call = Regex("^(позвони|набери|звони|позвонить)\\s+(.+)$").find(c)
                   val open = Regex("^(открой|открыть|запусти|зайди в|зайди|включи)\\s+(в\\s+)?(.+)$").find(c)
                   val yt = Regex("^(найди|найти|поищи|ищи)\\s+в\\s+(?:ютубе|ютуб|youtube)\\s+(.+)$").find(c)
@@ -639,13 +1013,13 @@ jobs:
                       c.contains("домой") || c.startsWith("закрой") || c.contains("сверни") -> goHome()
                       c.contains("добр") && c.contains("утр") -> weather(true)
                       c.contains("погод") -> weather(false)
-                      c.contains("голос") && (c.contains("смени") || c.contains("поменя") || c.contains("друго")) -> changeVoice()
+                      c.contains("голос") && (c.contains("смени") || c.contains("поменя") || c.contains("измени") || c.contains("друго")) -> changeVoice()
                       c.contains("ниже") && (c.contains("говори") || c.contains("голос")) -> tune(-0.15f, 0f, "Говорю ниже, сэр.")
                       c.contains("выше") && (c.contains("говори") || c.contains("голос")) -> tune(0.15f, 0f, "Говорю выше, сэр.")
                       c.contains("быстрее") && c.contains("говори") -> tune(0f, 0.15f, "Говорю быстрее, сэр.")
                       c.contains("медленнее") && c.contains("говори") -> tune(0f, -0.15f, "Говорю медленнее, сэр.")
                       c.contains("написал") || c.contains("сообщени") || c.contains("уведомлен") || c.startsWith("прочитай") -> readNotifs(c)
-                      c.contains("умеешь") -> speak("Я умею говорить время и дату, звонить контактам, открывать приложения, искать в гугле и в ютубе, говорить погоду, читать сообщения из мессенджеров и менять голос, сэр.")
+                      c.contains("умеешь") -> speak("Я умею говорить время и дату, звонить контактам, открывать приложения, включать музыку, искать в гугле и в ютубе, говорить погоду, читать сообщения из мессенджеров и менять голос, сэр.")
                       c.contains("врем") -> {
                           val cal = Calendar.getInstance()
                           speak("Сейчас " + cal.get(Calendar.HOUR_OF_DAY) + " " + "%02d".format(cal.get(Calendar.MINUTE)) + ", сэр.")
@@ -653,6 +1027,155 @@ jobs:
                       c.contains("дата") || c.contains("число") || c.contains("день") -> {
                           speak("Сегодня " + SimpleDateFormat("EEEE, d MMMM yyyy", ru).format(Date()) + ", сэр.")
                       }
+                      else -> return false
+                  }
+                  return true
+              }
+
+              private fun musicOn(): Boolean {
+                  return try { player?.isPlaying == true } catch (e: Exception) { false }
+              }
+
+              private fun duck(on: Boolean) {
+                  try {
+                      val v = if (on) 0.15f else musicVol
+                      player?.setVolume(v, v)
+                  } catch (e: Exception) {}
+              }
+
+              private fun hasAudioPerm(): Boolean {
+                  val p = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
+                  return checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+              }
+
+              private fun loadTracks(): Boolean {
+                  val list = ArrayList<Pair<Uri, String>>()
+                  try {
+                      val col = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                      val cur = contentResolver.query(
+                          col,
+                          arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST),
+                          MediaStore.Audio.Media.IS_MUSIC + " != 0", null, null)
+                      if (cur != null) {
+                          while (cur.moveToNext()) {
+                              val id = cur.getLong(0)
+                              val title = cur.getString(1) ?: ""
+                              val artist = cur.getString(2) ?: ""
+                              val name = if (artist.isBlank() || artist == "<unknown>") title else artist + " - " + title
+                              list.add(Pair(ContentUris.withAppendedId(col, id), name))
+                          }
+                          cur.close()
+                      }
+                  } catch (e: Exception) { log("Музыка: " + e) }
+                  list.shuffle()
+                  tracks = list
+                  log("Песен найдено: " + list.size)
+                  return list.isNotEmpty()
+              }
+
+              private fun stopMusic() {
+                  try { player?.stop() } catch (e: Exception) {}
+                  try { player?.release() } catch (e: Exception) {}
+                  player = null
+              }
+
+              private fun musicFailed() {
+                  musicFail++
+                  if (musicFail < 5) {
+                      trackIdx++
+                      h.postDelayed({ playTrack() }, 300)
+                  } else {
+                      musicFail = 0
+                      stopMusic()
+                      speak("Не удаётся воспроизвести музыку, сэр.")
+                  }
+              }
+
+              private fun playTrack() {
+                  if (tracks.isEmpty() || !running) return
+                  stopMusic()
+                  val t = tracks[trackIdx % tracks.size]
+                  try {
+                      val mp = MediaPlayer()
+                      mp.setAudioAttributes(AudioAttributes.Builder()
+                          .setUsage(AudioAttributes.USAGE_MEDIA)
+                          .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                          .build())
+                      mp.setDataSource(this, t.first)
+                      mp.setOnCompletionListener {
+                          trackIdx++
+                          playTrack()
+                      }
+                      mp.setOnErrorListener { _, _, _ ->
+                          h.post { musicFailed() }
+                          true
+                      }
+                      mp.prepare()
+                      val v = if (speaking) 0.15f else musicVol
+                      mp.setVolume(v, v)
+                      mp.start()
+                      player = mp
+                      musicFail = 0
+                      log("Играет: " + t.second)
+                  } catch (e: Exception) {
+                      log("Плеер: " + e)
+                      musicFailed()
+                  }
+              }
+
+              private fun startMusic() {
+                  if (!hasAudioPerm()) {
+                      speak("Нет доступа к музыке, сэр. Откройте настройки и нажмите кнопку один.")
+                      return
+                  }
+                  if (!loadTracks()) {
+                      speak("Музыку на телефоне не нашёл, сэр.")
+                      return
+                  }
+                  trackIdx = 0
+                  musicFail = 0
+                  speak("Включаю музыку, сэр. Песен найдено: " + tracks.size + ".", false)
+                  h.postDelayed({ playTrack() }, 2500)
+              }
+
+              private fun volume(up: Boolean) {
+                  try {
+                      val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                      val d = if (up) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+                      am.adjustStreamVolume(AudioManager.STREAM_MUSIC, d, 0)
+                      am.adjustStreamVolume(AudioManager.STREAM_MUSIC, d, 0)
+                  } catch (e: Exception) { log("Громкость: " + e) }
+              }
+
+              private fun musicCmd(c: String): Boolean {
+                  val has = player != null
+                  val about = c.contains("музык") || c.contains("песн") || c.contains("трек")
+                  when {
+                      about && (c.contains("стоп") || c.contains("выключ") || c.contains("останов") || c.contains("хватит") || c.contains("отключ")) -> {
+                          stopMusic()
+                          speak("Музыка выключена, сэр.", false)
+                      }
+                      has && c.contains("пауз") -> {
+                          try { player?.pause() } catch (e: Exception) {}
+                      }
+                      has && c.contains("продолж") -> {
+                          try { player?.start() } catch (e: Exception) {}
+                      }
+                      has && (c.contains("следующ") || c.contains("дальше") || (c.contains("друг") && about)) -> {
+                          trackIdx++
+                          playTrack()
+                      }
+                      has && (c.contains("предыдущ") || c.contains("прошл")) -> {
+                          trackIdx = if (trackIdx > 0) trackIdx - 1 else 0
+                          playTrack()
+                      }
+                      has && (c.contains("что играет") || c.contains("какая песня") || c.contains("как называется")) -> {
+                          speak("Играет " + tracks[trackIdx % tracks.size].second + ", сэр.", false)
+                      }
+                      c.contains("громче") -> volume(true)
+                      c.contains("тише") -> volume(false)
+                      about && (c.contains("постав") || c.contains("включ") || c.contains("запуст") || c.contains("играй") || c.contains("найди")) -> startMusic()
+                      c.contains("музык") -> startMusic()
                       else -> return false
                   }
                   return true
@@ -732,7 +1255,7 @@ jobs:
               private fun readNotifs(c: String) {
                   val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: ""
                   if (!enabled.contains(packageName)) {
-                      speak("Нет доступа к уведомлениям, сэр. Откройте приложение и нажмите кнопку пять.")
+                      speak("Нет доступа к уведомлениям, сэр. Откройте настройки и нажмите кнопку пять.")
                       return
                   }
                   var pk = NotifStore.watched
@@ -858,7 +1381,10 @@ jobs:
               override fun onDestroy() {
                   log("Служба остановлена")
                   running = false
+                  setState("stopped", "")
+                  try { getSharedPreferences("jura", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(prefListener) } catch (e: Exception) {}
                   h.removeCallbacksAndMessages(null)
+                  stopMusic()
                   try { svc?.stop() } catch (e: Exception) {}
                   try { svc?.shutdown() } catch (e: Exception) {}
                   try { model?.close() } catch (e: Exception) {}
@@ -868,6 +1394,18 @@ jobs:
               }
           }
           EOF
+      - name: Add background image
+        run: |
+          mkdir -p app/src/main/res/drawable-nodpi
+          BG=$(ls *.png *.jpg *.jpeg 2>/dev/null | head -n 1 || true)
+          if [ -n "$BG" ]; then
+            EXT="${BG##*.}"
+            if [ "$EXT" = "jpeg" ]; then EXT=jpg; fi
+            cp "$BG" "app/src/main/res/drawable-nodpi/jura_bg.$EXT"
+            echo "Background: $BG"
+          else
+            echo "No background image found"
+          fi
       - name: Download speech model
         run: |
           mkdir -p app/src/main/assets
