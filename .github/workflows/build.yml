@@ -186,7 +186,7 @@ jobs:
                   title.gravity = Gravity.CENTER_HORIZONTAL
                   l.addView(title)
                   val hint = TextView(this)
-                  hint.text = "Нажмите кнопки по порядку. Потом скажите: который час, позвони маме, открой ютуб, кто мне написал в ватсап, смени голос."
+                  hint.text = "Нажмите кнопки по порядку. Потом скажите: который час, позвони маме, открой ютуб, кто мне написал в ватсап, найди в гугле, доброе утро, повтори, смени голос."
                   l.addView(hint)
                   fun btn(t: String, a: () -> Unit) {
                       val x = Button(this)
@@ -340,6 +340,8 @@ jobs:
           import org.vosk.android.SpeechService
           import org.vosk.android.StorageService
           import java.io.IOException
+          import java.net.HttpURLConnection
+          import java.net.URL
           import java.text.SimpleDateFormat
           import java.util.Calendar
           import java.util.Date
@@ -369,6 +371,7 @@ jobs:
               private var speaking = false
               private var speakId = 0
               private var errCount = 0
+              private var last = ""
               private var wl: PowerManager.WakeLock? = null
               private val ru = Locale("ru", "RU")
 
@@ -516,8 +519,9 @@ jobs:
                   }
               }
 
-              private fun speak(s: String) {
+              private fun speak(s: String, remember: Boolean = true) {
                   log("Говорю: " + s)
+                  if (remember) last = s
                   speakId++
                   val my = speakId
                   speaking = true
@@ -609,29 +613,39 @@ jobs:
                   cmd = cmd.trim(' ', ',', '.', '!')
                   if (named && cmd.isEmpty()) {
                       awaiting = true
-                      speak("Слушаю, сэр.")
+                      speak("Слушаю, сэр.", false)
                       return
                   }
                   awaiting = false
                   if (cmd.isEmpty()) return
                   if (!exec(cmd) && named) {
-                      speak("Простите, сэр, я не понял команду. Я услышал: " + cmd + ".")
+                      speak("Простите, сэр, я не понял команду. Я услышал: " + cmd + ".", false)
                   }
               }
 
               private fun exec(c: String): Boolean {
                   val call = Regex("^(позвони|набери|звони|позвонить)\\s+(.+)$").find(c)
                   val open = Regex("^(открой|открыть|запусти|зайди в|зайди|включи)\\s+(в\\s+)?(.+)$").find(c)
+                  val yt = Regex("^(найди|найти|поищи|ищи)\\s+в\\s+(?:ютубе|ютуб|youtube)\\s+(.+)$").find(c)
+                  val gs = Regex("^(найди|найти|поищи|ищи|загугли)\\s+(?:в\\s+(?:гугле|гугл|интернете|google)\\s+)?(.+)$").find(c)
                   when {
                       call != null -> callContact(call.groupValues[2])
                       open != null -> openApp(open.groupValues[3])
+                      yt != null -> webSearch(yt.groupValues[2], true)
+                      gs != null -> webSearch(gs.groupValues[2], false)
+                      c.contains("повтор") -> {
+                          if (last.isEmpty()) speak("Мне нечего повторять, сэр.", false) else speak(last)
+                      }
+                      c.contains("домой") || c.startsWith("закрой") || c.contains("сверни") -> goHome()
+                      c.contains("добр") && c.contains("утр") -> weather(true)
+                      c.contains("погод") -> weather(false)
                       c.contains("голос") && (c.contains("смени") || c.contains("поменя") || c.contains("друго")) -> changeVoice()
                       c.contains("ниже") && (c.contains("говори") || c.contains("голос")) -> tune(-0.15f, 0f, "Говорю ниже, сэр.")
                       c.contains("выше") && (c.contains("говори") || c.contains("голос")) -> tune(0.15f, 0f, "Говорю выше, сэр.")
                       c.contains("быстрее") && c.contains("говори") -> tune(0f, 0.15f, "Говорю быстрее, сэр.")
                       c.contains("медленнее") && c.contains("говори") -> tune(0f, -0.15f, "Говорю медленнее, сэр.")
                       c.contains("написал") || c.contains("сообщени") || c.contains("уведомлен") || c.startsWith("прочитай") -> readNotifs(c)
-                      c.contains("умеешь") -> speak("Я умею говорить время и дату, звонить контактам, открывать приложения, читать сообщения из мессенджеров и менять голос, сэр.")
+                      c.contains("умеешь") -> speak("Я умею говорить время и дату, звонить контактам, открывать приложения, искать в гугле и в ютубе, говорить погоду, читать сообщения из мессенджеров и менять голос, сэр.")
                       c.contains("врем") -> {
                           val cal = Calendar.getInstance()
                           speak("Сейчас " + cal.get(Calendar.HOUR_OF_DAY) + " " + "%02d".format(cal.get(Calendar.MINUTE)) + ", сэр.")
@@ -644,6 +658,77 @@ jobs:
                   return true
               }
 
+              private fun webSearch(q: String, youtube: Boolean) {
+                  val url = if (youtube) "https://www.youtube.com/results?search_query=" + Uri.encode(q)
+                  else "https://www.google.com/search?q=" + Uri.encode(q)
+                  speak(if (youtube) "Ищу в ютубе, сэр." else "Ищу в гугле, сэр.")
+                  h.postDelayed({
+                      try {
+                          val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                          i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                          startActivity(i)
+                      } catch (e: Exception) { log("Поиск: " + e) }
+                  }, 1500)
+              }
+
+              private fun goHome() {
+                  speak("Сворачиваю, сэр.")
+                  h.postDelayed({
+                      try {
+                          val i = Intent(Intent.ACTION_MAIN)
+                          i.addCategory(Intent.CATEGORY_HOME)
+                          i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                          startActivity(i)
+                      } catch (e: Exception) { log("Домой: " + e) }
+                  }, 1200)
+              }
+
+              private fun tempWord(t: Int): String {
+                  val a = Math.abs(t)
+                  val w = if (a % 10 == 1 && a % 100 != 11) "градус"
+                  else if (a % 10 in 2..4 && a % 100 !in 12..14) "градуса"
+                  else "градусов"
+                  return (if (t < 0) "минус " else "") + a + " " + w
+              }
+
+              private fun codeWord(c: Int): String {
+                  return when {
+                      c == 0 -> "ясно"
+                      c in 1..2 -> "переменная облачность"
+                      c == 3 -> "пасмурно"
+                      c == 45 || c == 48 -> "туман"
+                      c in 51..57 -> "морось"
+                      c in 61..67 -> "дождь"
+                      c in 71..77 -> "снег"
+                      c in 80..82 -> "ливень"
+                      c in 85..86 -> "снегопад"
+                      c >= 95 -> "гроза"
+                      else -> "без осадков"
+                  }
+              }
+
+              private fun weather(greet: Boolean) {
+                  Thread {
+                      var msg = ""
+                      try {
+                          val u = URL("https://api.open-meteo.com/v1/forecast?latitude=38.5598&longitude=68.7870&current=temperature_2m,weather_code&timezone=auto")
+                          val con = u.openConnection() as HttpURLConnection
+                          con.connectTimeout = 6000
+                          con.readTimeout = 6000
+                          val body = con.inputStream.bufferedReader().use { it.readText() }
+                          val cur = JSONObject(body).getJSONObject("current")
+                          val t = Math.round(cur.getDouble("temperature_2m")).toInt()
+                          val code = cur.getInt("weather_code")
+                          msg = "В Душанбе сейчас " + tempWord(t) + ", " + codeWord(code) + "."
+                      } catch (e: Exception) {
+                          log("Погода: " + e)
+                          msg = "Не удалось узнать погоду, сэр."
+                      }
+                      val out = if (greet) "Доброе утро, сэр. " + msg else msg
+                      h.post { speak(out) }
+                  }.start()
+              }
+
               private fun readNotifs(c: String) {
                   val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: ""
                   if (!enabled.contains(packageName)) {
@@ -654,7 +739,7 @@ jobs:
                   var name = "мессенджерах"
                   when {
                       c.contains("ватсап") || c.contains("вацап") || c.contains("whatsapp") -> { pk = NotifStore.whatsapp; name = "WhatsApp" }
-                      c.contains("инст") -> { pk = NotifStore.instagram; name = "Instagram" }
+                      c.contains("инст") || c.contains("грамм") -> { pk = NotifStore.instagram; name = "Instagram" }
                       c.contains("телег") -> { pk = NotifStore.telegram; name = "Telegram" }
                   }
                   val list = NotifStore.recent(pk, 5)
@@ -723,10 +808,10 @@ jobs:
                   val raw = q0.trim()
                   val alias = listOf(
                       "ютуб" to "youtube", "ютьюб" to "youtube",
-                      "ватсап" to "whatsapp", "вацап" to "whatsapp",
+                      "ватсап" to "whatsapp", "вацап" to "whatsapp", "вотсап" to "whatsapp",
                       "телеграм" to "telegram", "хром" to "chrome",
                       "гугл" to "google", "плей маркет" to "play",
-                      "инста" to "instagram",
+                      "инста" to "instagram", "грамм" to "instagram",
                       "чат" to "chatgpt",
                       "клод" to "claude", "клауд" to "claude",
                       "легенд" to "mobile legends", "мобайл" to "mobile legends",
