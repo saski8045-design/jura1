@@ -72,6 +72,8 @@ jobs:
               <uses-permission android:name="android.permission.RECORD_AUDIO"/>
               <uses-permission android:name="android.permission.READ_CONTACTS"/>
               <uses-permission android:name="android.permission.CALL_PHONE"/>
+              <uses-permission android:name="android.permission.SEND_SMS"/>
+              <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
@@ -86,7 +88,7 @@ jobs:
                   </intent>
                   <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
               </queries>
-              <application android:label="JURA" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:theme="@android:style/Theme.DeviceDefault.Light">
+              <application android:label="JURA" android:allowBackup="false" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:theme="@android:style/Theme.DeviceDefault.Light">
                   <activity android:name=".MainActivity" android:exported="true" android:theme="@android:style/Theme.DeviceDefault.NoActionBar" android:windowSoftInputMode="adjustPan">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
@@ -161,6 +163,129 @@ jobs:
               val rate = listOf(0.92f, 0.85f, 1.05f)
           }
           EOF
+          cat > app/src/main/java/com/jura/assistant/Hud.kt <<'EOF'
+          package com.jura.assistant
+
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.graphics.RectF
+          import android.view.View
+
+          class Hud(ctx: Context) : View(ctx) {
+              var mode = 0
+              private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val green = Color.parseColor("#39FF14")
+              private var t = 0f
+              private val rc = RectF()
+
+              private fun glow(w: Float, d: () -> Unit) {
+                  p.color = green
+                  p.strokeWidth = w * 4f
+                  p.alpha = 40
+                  d()
+                  p.strokeWidth = w
+                  p.alpha = 255
+                  d()
+              }
+
+              override fun onDraw(c: Canvas) {
+                  val w = width.toFloat()
+                  val h = height.toFloat()
+                  t += 0.04f
+                  c.drawColor(Color.parseColor("#000A00"))
+                  p.style = Paint.Style.STROKE
+                  p.strokeCap = Paint.Cap.ROUND
+
+                  glow(2f) { c.drawLine(w * 0.05f, h * 0.10f, w * 0.95f, h * 0.10f, p) }
+
+                  val cx = w * 0.5f
+                  val cy = h * 0.27f
+                  val bigR = w * 0.40f
+                  glow(3f) { c.drawCircle(cx, cy, bigR * 0.55f, p) }
+                  glow(2f) { c.drawCircle(cx, cy, bigR * 0.75f, p) }
+                  glow(1.5f) { c.drawCircle(cx, cy, bigR * 0.92f, p) }
+                  rc.set(cx - bigR, cy - bigR, cx + bigR, cy + bigR)
+                  val rot = t * 40f * (if (mode == 0) 0.2f else 1f)
+                  glow(8f) {
+                      c.drawArc(rc, rot, 60f, false, p)
+                      c.drawArc(rc, rot + 120f, 40f, false, p)
+                      c.drawArc(rc, rot + 220f, 70f, false, p)
+                  }
+
+                  val mw = w * 0.05f
+                  p.color = green
+                  p.alpha = 255
+                  p.style = Paint.Style.FILL
+                  rc.set(cx - mw, cy - mw * 2.2f, cx + mw, cy + mw * 0.6f)
+                  c.drawRoundRect(rc, mw, mw, p)
+                  p.style = Paint.Style.STROKE
+                  p.strokeWidth = w * 0.012f
+                  rc.set(cx - mw * 1.7f, cy - mw * 1.4f, cx + mw * 1.7f, cy + mw * 1.6f)
+                  c.drawArc(rc, 0f, 180f, false, p)
+                  c.drawLine(cx, cy + mw * 1.6f, cx, cy + mw * 2.4f, p)
+                  c.drawLine(cx - mw, cy + mw * 2.4f, cx + mw, cy + mw * 2.4f, p)
+
+                  val wy = h * 0.473f
+                  val amp = (if (mode == 0) 0.004f else if (mode == 1) 0.02f else 0.055f) * h
+                  p.strokeWidth = w * 0.009f
+                  for (i in 0..40) {
+                      val x = w * 0.12f + (w * 0.76f) * i / 40f
+                      val env = 0.25f + 0.75f * (1f - Math.abs(i - 20) / 20f)
+                      val s = Math.abs(Math.sin((t * 3f + i * 0.6f).toDouble())).toFloat()
+                      val hb = amp * env * (0.35f + 0.65f * s)
+                      c.drawLine(x, wy - hb - 2f, x, wy + hb + 2f, p)
+                  }
+
+                  rc.set(w * 0.10f, h * 0.50f, w * 0.90f, h * 0.60f)
+                  glow(2.5f) { c.drawRoundRect(rc, h * 0.03f, h * 0.03f, p) }
+
+                  for (k in 0..3) {
+                      val s = 1f - k * 0.2f
+                      rc.set(cx - w * 0.45f * s, h * 0.78f - h * 0.035f * s, cx + w * 0.45f * s, h * 0.78f + h * 0.035f * s)
+                      glow(2f) { c.drawOval(rc, p) }
+                  }
+                  p.color = green
+                  p.alpha = 70
+                  p.strokeWidth = 1.5f
+                  for (i in -6..6) {
+                      c.drawLine(cx + i * w * 0.02f, h * 0.80f, cx + i * w * 0.17f, h, p)
+                  }
+                  for (j in 1..5) {
+                      val yy = h * 0.80f + h * 0.2f * j * j / 25f
+                      c.drawLine(0f, yy, w, yy, p)
+                  }
+
+                  rc.set(w * 0.04f, h * 0.861f, w * 0.96f, h * 0.928f)
+                  glow(3f) { c.drawRoundRect(rc, h * 0.034f, h * 0.034f, p) }
+                  p.style = Paint.Style.FILL
+                  p.color = green
+                  p.alpha = 255
+                  for (k in 0..2) {
+                      c.drawCircle(w * 0.89f, h * (0.8795f + k * 0.0145f), w * 0.008f, p)
+                  }
+
+                  p.style = Paint.Style.STROKE
+                  p.strokeWidth = w * 0.012f
+                  for (k in 0..2) {
+                      val yy = h * (0.053f + k * 0.011f)
+                      c.drawLine(w * 0.04f, yy, w * 0.13f, yy, p)
+                  }
+                  val gx = w * 0.92f
+                  val gy = h * 0.062f
+                  c.drawCircle(gx, gy, w * 0.025f, p)
+                  for (k in 0..7) {
+                      val a = k * Math.PI / 4
+                      val ca = Math.cos(a).toFloat()
+                      val sa = Math.sin(a).toFloat()
+                      c.drawLine(gx + ca * w * 0.035f, gy + sa * w * 0.035f, gx + ca * w * 0.048f, gy + sa * w * 0.048f, p)
+                  }
+
+                  postInvalidateDelayed(40)
+              }
+          }
+          EOF
           cat > app/src/main/java/com/jura/assistant/MainActivity.kt <<'EOF'
           package com.jura.assistant
 
@@ -221,6 +346,7 @@ jobs:
               private val h = Handler(Looper.getMainLooper())
               private lateinit var st1: TextView
               private lateinit var st2: TextView
+              private var hud: Hud? = null
               private val tick = object : Runnable {
                   override fun run() {
                       refresh()
@@ -268,10 +394,9 @@ jobs:
                       patch(0.2378f, 0.5294f, 0.761f, 0.5882f, "#000A00")
                       patch(0.0856f, 0.8824f, 0.2735f, 0.9091f, "#000700")
                   } else {
-                      val logo = ImageView(this)
-                      logo.scaleType = ImageView.ScaleType.FIT_CENTER
-                      logo.setImageResource(R.drawable.ic_logo)
-                      root.put(logo, 0.25f, 0.17f, 0.75f, 0.37f)
+                      val hd = Hud(this)
+                      hud = hd
+                      root.put(hd, 0f, 0f, 1f, 1f)
                   }
 
                   root.put(label("JURA", 28f, green, true), 0.30f, 0.040f, 0.70f, 0.076f)
@@ -348,11 +473,14 @@ jobs:
                   if (!running()) {
                       st1.text = "JURA выключен"
                       st2.text = "Нажмите на микрофон"
+                      hud?.mode = 0
                       return
                   }
                   val p = getSharedPreferences("jura", MODE_PRIVATE)
-                  st1.text = p.getString("state", "Загрузка")
+                  val s = p.getString("state", "Загрузка") ?: "Загрузка"
+                  st1.text = s
                   st2.text = p.getString("phrase", "")
+                  hud?.mode = if (s == "Говорю" || s == "Думаю" || s == "Ищу") 2 else 1
               }
 
               private fun toggle() {
@@ -378,6 +506,7 @@ jobs:
                   perms.add(Manifest.permission.RECORD_AUDIO)
                   perms.add(Manifest.permission.READ_CONTACTS)
                   perms.add(Manifest.permission.CALL_PHONE)
+                  perms.add(Manifest.permission.SEND_SMS)
                   perms.add(Manifest.permission.POST_NOTIFICATIONS)
                   if (Build.VERSION.SDK_INT >= 33) {
                       perms.add(Manifest.permission.READ_MEDIA_AUDIO)
@@ -404,9 +533,11 @@ jobs:
           import android.provider.Settings
           import android.speech.tts.TextToSpeech
           import android.speech.tts.Voice
+          import android.text.InputType
           import android.view.Gravity
           import android.view.ViewGroup
           import android.widget.Button
+          import android.widget.EditText
           import android.widget.ImageView
           import android.widget.LinearLayout
           import android.widget.ScrollView
@@ -417,6 +548,7 @@ jobs:
           class SettingsActivity : Activity() {
               private lateinit var logView: TextView
               private lateinit var voiceView: TextView
+              private lateinit var memView: TextView
               private var tts: TextToSpeech? = null
               private var ttsReady = false
               private val green = Color.parseColor("#39FF14")
@@ -430,6 +562,7 @@ jobs:
                   val l = LinearLayout(this)
                   l.orientation = LinearLayout.VERTICAL
                   l.setPadding(48, 96, 48, 64)
+                  val sp = getSharedPreferences("jura", MODE_PRIVATE)
 
                   fun lp(top: Int): LinearLayout.LayoutParams {
                       val p = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -469,6 +602,20 @@ jobs:
                       l.addView(x, lp(16))
                   }
 
+                  fun field(hint: String, key: String, secret: Boolean): EditText {
+                      val e = EditText(this)
+                      e.hint = hint
+                      e.setHintTextColor(Color.parseColor("#7FA37F"))
+                      e.setTextColor(Color.WHITE)
+                      e.setSingleLine(true)
+                      if (secret) {
+                          e.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                      }
+                      e.setText(sp.getString(key, ""))
+                      l.addView(e, lp(8))
+                      return e
+                  }
+
                   btn("← Назад") { finish() }
 
                   val logo = ImageView(this)
@@ -502,6 +649,27 @@ jobs:
                   btn("4. Запустить Джуру") { startJura() }
                   btn("Остановить") { stopService(Intent(this, JuraService::class.java)) }
 
+                  head("Личное")
+                  val fName = field("Ваше имя", "user_name", false)
+                  val fCity = field("Город для погоды (по умолчанию Душанбе)", "city", false)
+                  val fKey = field("Ключ ИИ (sk-ant-...)", "ai_key", true)
+                  note("Ключ берётся на console.anthropic.com (нужен платный аккаунт). Он хранится только на этом телефоне. Без ключа Джура отвечает на «что такое...» из Википедии.")
+                  btn("Сохранить") {
+                      sp.edit()
+                          .putString("user_name", fName.text.toString().trim())
+                          .putString("city", fCity.text.toString().trim().ifEmpty { "Душанбе" })
+                          .putString("ai_key", fKey.text.toString().trim())
+                          .apply()
+                      Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
+                  }
+
+                  head("Память")
+                  memView = note("")
+                  btn("Забыть заметки и историю") {
+                      sp.edit().remove("notes").remove("history").apply()
+                      showMem()
+                  }
+
                   head("Голос")
                   voiceView = note("")
                   for (i in Prof.names.indices) {
@@ -512,7 +680,7 @@ jobs:
                   head("Журнал")
                   btn("Обновить журнал") { showLog() }
                   btn("Очистить журнал") {
-                      getSharedPreferences("jura", MODE_PRIVATE).edit().remove("log").apply()
+                      sp.edit().remove("log").apply()
                       showLog()
                   }
                   logView = TextView(this)
@@ -531,12 +699,14 @@ jobs:
                   }
                   showLog()
                   showVoice()
+                  showMem()
               }
 
               override fun onResume() {
                   super.onResume()
                   showLog()
                   showVoice()
+                  showMem()
               }
 
               override fun onDestroy() {
@@ -546,6 +716,11 @@ jobs:
 
               private fun showLog() {
                   logView.text = getSharedPreferences("jura", MODE_PRIVATE).getString("log", "Журнал пуст")
+              }
+
+              private fun showMem() {
+                  val n = (getSharedPreferences("jura", MODE_PRIVATE).getString("notes", "") ?: "").split("\n").filter { it.isNotBlank() }.size
+                  memView.text = "Заметок в памяти: " + n + ". Голосом: «запомни, что ...», «что ты помнишь», «забудь всё»."
               }
 
               private fun showVoice() {
@@ -593,6 +768,7 @@ jobs:
                   perms.add(Manifest.permission.RECORD_AUDIO)
                   perms.add(Manifest.permission.READ_CONTACTS)
                   perms.add(Manifest.permission.CALL_PHONE)
+                  perms.add(Manifest.permission.SEND_SMS)
                   perms.add(Manifest.permission.POST_NOTIFICATIONS)
                   if (Build.VERSION.SDK_INT >= 33) {
                       perms.add(Manifest.permission.READ_MEDIA_AUDIO)
@@ -676,16 +852,20 @@ jobs:
           import android.content.SharedPreferences
           import android.content.pm.PackageManager
           import android.content.pm.ServiceInfo
+          import android.hardware.camera2.CameraCharacteristics
+          import android.hardware.camera2.CameraManager
           import android.media.AudioAttributes
           import android.media.AudioManager
           import android.media.MediaPlayer
           import android.net.Uri
+          import android.os.BatteryManager
           import android.os.Build
           import android.os.Bundle
           import android.os.Handler
           import android.os.IBinder
           import android.os.Looper
           import android.os.PowerManager
+          import android.provider.AlarmClock
           import android.provider.ContactsContract
           import android.provider.MediaStore
           import android.provider.Settings
@@ -693,7 +873,9 @@ jobs:
           import android.speech.tts.UtteranceProgressListener
           import android.speech.tts.Voice
           import android.telecom.TelecomManager
+          import android.telephony.SmsManager
           import android.util.Log
+          import org.json.JSONArray
           import org.json.JSONObject
           import org.vosk.Model
           import org.vosk.Recognizer
@@ -742,15 +924,28 @@ jobs:
               private var musicFail = 0
               private val musicVol = 0.6f
 
+              private var pending: (() -> Unit)? = null
+              private var pendingAt = 0L
+
+              private val numMap = mapOf(
+                  "ноль" to 0, "один" to 1, "одна" to 1, "одну" to 1, "два" to 2, "две" to 2, "три" to 3,
+                  "четыре" to 4, "пять" to 5, "шесть" to 6, "семь" to 7, "восемь" to 8, "девять" to 9,
+                  "десять" to 10, "одиннадцать" to 11, "двенадцать" to 12, "тринадцать" to 13,
+                  "четырнадцать" to 14, "пятнадцать" to 15, "шестнадцать" to 16, "семнадцать" to 17,
+                  "восемнадцать" to 18, "девятнадцать" to 19, "двадцать" to 20, "тридцать" to 30,
+                  "сорок" to 40, "пятьдесят" to 50)
+
               private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
                   if (key == "profile") h.post { applyVoice() }
               }
 
               private fun log(m: String) { writeLog(this, m) }
 
+              private fun prefs(): SharedPreferences = getSharedPreferences("jura", MODE_PRIVATE)
+
               private fun setState(s: String, p: String) {
                   try {
-                      getSharedPreferences("jura", MODE_PRIVATE).edit().putString("state", s).putString("phrase", p).apply()
+                      prefs().edit().putString("state", s).putString("phrase", p).apply()
                   } catch (e: Exception) {}
               }
 
@@ -762,7 +957,7 @@ jobs:
                   super.onCreate()
                   log("Служба создана, Android " + Build.VERSION.SDK_INT)
                   setState("Загрузка", "Загружаю модель распознавания")
-                  getSharedPreferences("jura", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(prefListener)
+                  prefs().registerOnSharedPreferenceChangeListener(prefListener)
                   val nm = getSystemService(NotificationManager::class.java)
                   nm.createNotificationChannel(NotificationChannel("jura", "JURA", NotificationManager.IMPORTANCE_LOW))
                   val n = Notification.Builder(this, "jura")
@@ -826,7 +1021,7 @@ jobs:
 
               private fun applyVoice() {
                   val t = tts ?: return
-                  val p = getSharedPreferences("jura", MODE_PRIVATE)
+                  val p = prefs()
                   val idx = p.getInt("profile", 0).coerceIn(0, Prof.names.size - 1)
                   try {
                       val vs = ruVoices()
@@ -837,7 +1032,7 @@ jobs:
               }
 
               private fun changeVoice() {
-                  val p = getSharedPreferences("jura", MODE_PRIVATE)
+                  val p = prefs()
                   val idx = (p.getInt("profile", 0) + 1) % Prof.names.size
                   p.edit().putInt("profile", idx).remove("pitch").remove("rate").apply()
                   applyVoice()
@@ -846,7 +1041,7 @@ jobs:
               }
 
               private fun tune(dp: Float, dr: Float, phrase: String) {
-                  val p = getSharedPreferences("jura", MODE_PRIVATE)
+                  val p = prefs()
                   val idx = p.getInt("profile", 0).coerceIn(0, Prof.names.size - 1)
                   val pitch = (p.getFloat("pitch", Prof.pitch[idx]) + dp).coerceIn(0.3f, 1.5f)
                   val rate = (p.getFloat("rate", Prof.rate[idx]) + dr).coerceIn(0.5f, 1.6f)
@@ -910,6 +1105,12 @@ jobs:
                   }, 30000)
               }
 
+              private fun ask(q: String, act: () -> Unit) {
+                  pending = act
+                  pendingAt = System.currentTimeMillis()
+                  speak(q + " Скажите да или нет.", false)
+              }
+
               private val listener = object : RecognitionListener {
                   override fun onPartialResult(hypothesis: String?) {}
                   override fun onResult(hypothesis: String?) { onText(hypothesis) }
@@ -964,6 +1165,27 @@ jobs:
 
               private fun handle(raw: String) {
                   val t = raw.lowercase(ru).trim()
+                  val pd = pending
+                  if (pd != null) {
+                      if (System.currentTimeMillis() - pendingAt > 25000) {
+                          pending = null
+                      } else {
+                          val ws = t.split(" ")
+                          val yes = listOf("да", "давай", "звони", "отправляй", "подтверждаю", "конечно", "ага", "верно", "отправь")
+                          val no = listOf("нет", "отмена", "отмени", "стоп", "не")
+                          if (ws.any { yes.contains(it) }) {
+                              pending = null
+                              pd()
+                              return
+                          }
+                          if (ws.any { no.contains(it) }) {
+                              pending = null
+                              speak("Хорошо, отменил, сэр.", false)
+                              return
+                          }
+                          return
+                      }
+                  }
                   var cmd = t
                   var named = awaiting
                   if (!awaiting) {
@@ -992,44 +1214,363 @@ jobs:
                   awaiting = false
                   if (cmd.isEmpty()) return
                   if (!exec(cmd) && named) {
-                      speak("Простите, сэр, я не понял команду. Я услышал: " + cmd + ".", false)
+                      if (hasKey()) {
+                          askAi(cmd)
+                      } else if (isWiki(cmd)) {
+                          wiki(cmd)
+                      } else {
+                          speak("Простите, сэр, я не понял команду. Я услышал: " + cmd + ".", false)
+                      }
                   }
+              }
+
+              private fun isWiki(c: String): Boolean {
+                  return Regex("^(что такое|кто такой|кто такая|кто такие|расскажи про|расскажи о)\\s+.+$").matches(c)
               }
 
               private fun exec(c: String): Boolean {
                   if (musicCmd(c)) return true
+                  if (sysCmd(c)) return true
+                  val short = c.length < 35
+                  val sms = Regex("^(?:отправь|напиши|пошли|отправить)\\s+(?:смс|эсэмэс|смску|сообщение)\\s+(.+?)\\s+(?:текст|что)\\s+(.+)$").find(c)
                   val call = Regex("^(позвони|набери|звони|позвонить)\\s+(.+)$").find(c)
                   val open = Regex("^(открой|открыть|запусти|зайди в|зайди|включи)\\s+(в\\s+)?(.+)$").find(c)
                   val yt = Regex("^(найди|найти|поищи|ищи)\\s+в\\s+(?:ютубе|ютуб|youtube)\\s+(.+)$").find(c)
                   val gs = Regex("^(найди|найти|поищи|ищи|загугли)\\s+(?:в\\s+(?:гугле|гугл|интернете|google)\\s+)?(.+)$").find(c)
+                  val nm = Regex("^меня зовут\\s+(.+)$").find(c)
+                  val cityM = Regex("^(?:мой город|поставь город|смени город|установи город)\\s+(.+)$").find(c)
+                  val mem = Regex("^запомни(?:\\s+что)?\\s+(.+)$").find(c)
                   when {
+                      sms != null -> smsCmd(sms.groupValues[1], sms.groupValues[2])
                       call != null -> callContact(call.groupValues[2])
                       open != null -> openApp(open.groupValues[3])
+                      nm != null -> setName(nm.groupValues[1])
+                      cityM != null -> setCity(cityM.groupValues[1])
+                      mem != null -> remember(mem.groupValues[1])
+                      c.contains("помнишь") || c.contains("мои заметки") || c.contains("знаешь обо мне") -> recall()
+                      c.contains("забудь") && (c.contains("все") || c.contains("всё") || c.contains("памят")) -> forget()
                       yt != null -> webSearch(yt.groupValues[2], true)
                       gs != null -> webSearch(gs.groupValues[2], false)
-                      c.contains("повтор") -> {
+                      short && c.contains("повтор") -> {
                           if (last.isEmpty()) speak("Мне нечего повторять, сэр.", false) else speak(last)
                       }
                       c.contains("домой") || c.startsWith("закрой") || c.contains("сверни") -> goHome()
-                      c.contains("добр") && c.contains("утр") -> weather(true)
-                      c.contains("погод") -> weather(false)
+                      short && c.contains("добр") && c.contains("утр") -> weather(true)
+                      short && c.contains("погод") -> weather(false)
                       c.contains("голос") && (c.contains("смени") || c.contains("поменя") || c.contains("измени") || c.contains("друго")) -> changeVoice()
                       c.contains("ниже") && (c.contains("говори") || c.contains("голос")) -> tune(-0.15f, 0f, "Говорю ниже, сэр.")
                       c.contains("выше") && (c.contains("говори") || c.contains("голос")) -> tune(0.15f, 0f, "Говорю выше, сэр.")
                       c.contains("быстрее") && c.contains("говори") -> tune(0f, 0.15f, "Говорю быстрее, сэр.")
                       c.contains("медленнее") && c.contains("говори") -> tune(0f, -0.15f, "Говорю медленнее, сэр.")
                       c.contains("написал") || c.contains("сообщени") || c.contains("уведомлен") || c.startsWith("прочитай") -> readNotifs(c)
-                      c.contains("умеешь") -> speak("Я умею говорить время и дату, звонить контактам, открывать приложения, включать музыку, искать в гугле и в ютубе, говорить погоду, читать сообщения из мессенджеров и менять голос, сэр.")
-                      c.contains("врем") -> {
+                      c.contains("умеешь") -> speak("Я умею говорить время и дату, звонить и писать смс с подтверждением, открывать приложения, включать музыку, ставить будильник и таймер, включать фонарик, искать в гугле и в ютубе, говорить погоду, читать сообщения, запоминать заметки, отвечать на вопросы и менять голос, сэр.")
+                      short && c.contains("врем") -> {
                           val cal = Calendar.getInstance()
                           speak("Сейчас " + cal.get(Calendar.HOUR_OF_DAY) + " " + "%02d".format(cal.get(Calendar.MINUTE)) + ", сэр.")
                       }
-                      c.contains("дата") || c.contains("число") || c.contains("день") -> {
+                      short && (c.contains("дата") || c.contains("число") || c.contains("день")) -> {
                           speak("Сегодня " + SimpleDateFormat("EEEE, d MMMM yyyy", ru).format(Date()) + ", сэр.")
                       }
                       else -> return false
                   }
                   return true
+              }
+
+              private fun capital(s: String): String {
+                  val t = s.trim()
+                  return if (t.isEmpty()) t else t.substring(0, 1).uppercase(ru) + t.substring(1)
+              }
+
+              private fun setName(n: String) {
+                  val name = capital(n)
+                  prefs().edit().putString("user_name", name).apply()
+                  speak("Приятно познакомиться, " + name + ".")
+              }
+
+              private fun setCity(c: String) {
+                  val city = capital(c)
+                  prefs().edit().putString("city", city).remove("geo_city").apply()
+                  speak("Город " + city + " запомнил, сэр. Погоду теперь скажу для него.")
+              }
+
+              private fun remember(t: String) {
+                  val p = prefs()
+                  val lines = (p.getString("notes", "") ?: "").split("\n").filter { it.isNotBlank() }.toMutableList()
+                  lines.add(t.take(200))
+                  while (lines.size > 20) lines.removeAt(0)
+                  p.edit().putString("notes", lines.joinToString("\n")).apply()
+                  speak("Запомнил, сэр.")
+              }
+
+              private fun recall() {
+                  val notes = (prefs().getString("notes", "") ?: "").split("\n").filter { it.isNotBlank() }
+                  if (notes.isEmpty()) {
+                      speak("Пока я ничего не запоминал, сэр.")
+                  } else {
+                      speak("Я помню: " + notes.joinToString(". ") + ".")
+                  }
+              }
+
+              private fun forget() {
+                  prefs().edit().remove("notes").remove("history").apply()
+                  speak("Всё забыл, сэр.")
+              }
+
+              private fun hasKey(): Boolean {
+                  return (prefs().getString("ai_key", "") ?: "").isNotBlank()
+              }
+
+              private fun loadHistory(): JSONArray {
+                  return try {
+                      JSONArray(prefs().getString("history", "[]"))
+                  } catch (e: Exception) {
+                      JSONArray()
+                  }
+              }
+
+              private fun saveHistory(old: JSONArray, q: String, a: String) {
+                  val arr = JSONArray()
+                  val start = if (old.length() > 10) old.length() - 10 else 0
+                  for (i in start until old.length()) arr.put(old.getJSONObject(i))
+                  arr.put(JSONObject().put("role", "user").put("content", q))
+                  arr.put(JSONObject().put("role", "assistant").put("content", a))
+                  prefs().edit().putString("history", arr.toString()).apply()
+              }
+
+              private fun busy(state: String, text: String) {
+                  speaking = true
+                  try { svc?.setPause(true) } catch (e: Exception) {}
+                  setState(state, text.take(90))
+              }
+
+              private fun askAi(q: String) {
+                  val key = (prefs().getString("ai_key", "") ?: "").trim()
+                  busy("Думаю", q)
+                  Thread {
+                      var out = ""
+                      try {
+                          val p = prefs()
+                          val name = p.getString("user_name", "") ?: ""
+                          val city = p.getString("city", "Душанбе") ?: "Душанбе"
+                          val notes = p.getString("notes", "") ?: ""
+                          val sys = StringBuilder("Ты Джура, голосовой помощник в телефоне пользователя. Отвечай по-русски, коротко (одно-три предложения), простыми словами, без списков, без форматирования и без эмодзи. ")
+                          if (name.isNotBlank()) sys.append("Пользователя зовут ").append(name).append(". ")
+                          sys.append("Его город: ").append(city).append(". Сейчас ").append(SimpleDateFormat("d MMMM yyyy, EEEE, HH:mm", ru).format(Date())).append(". ")
+                          if (notes.isNotBlank()) sys.append("Что пользователь просил запомнить: ").append(notes.replace("\n", "; ")).append(". ")
+                          val hist = loadHistory()
+                          val msgs = JSONArray()
+                          for (i in 0 until hist.length()) msgs.put(hist.getJSONObject(i))
+                          msgs.put(JSONObject().put("role", "user").put("content", q))
+                          val body = JSONObject()
+                              .put("model", "claude-haiku-5-5")
+                              .put("max_tokens", 300)
+                              .put("system", sys.toString())
+                              .put("messages", msgs)
+                          val con = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpURLConnection
+                          con.requestMethod = "POST"
+                          con.connectTimeout = 10000
+                          con.readTimeout = 30000
+                          con.doOutput = true
+                          con.setRequestProperty("content-type", "application/json")
+                          con.setRequestProperty("x-api-key", key)
+                          con.setRequestProperty("anthropic-version", "2023-06-01")
+                          con.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                          val code = con.responseCode
+                          if (code == 200) {
+                              val txt = con.inputStream.bufferedReader().use { it.readText() }
+                              val a = JSONObject(txt).getJSONArray("content").getJSONObject(0).getString("text").trim()
+                              saveHistory(hist, q, a)
+                              out = a
+                          } else {
+                              val err = try { con.errorStream?.bufferedReader()?.use { it.readText() } } catch (e: Exception) { null }
+                              log("ИИ код " + code + ": " + (err ?: "").take(200))
+                              out = if (code == 401) "Ключ ИИ не подошёл, сэр. Проверьте его в настройках." else "ИИ не ответил, сэр. Код " + code + "."
+                          }
+                      } catch (e: Exception) {
+                          log("ИИ: " + e)
+                          out = "Не удалось связаться с ИИ, сэр. Проверьте интернет."
+                      }
+                      val res = out
+                      h.post { speak(res) }
+                  }.start()
+              }
+
+              private fun wiki(q: String) {
+                  busy("Ищу", q)
+                  Thread {
+                      var out = ""
+                      try {
+                          val topic = q.replace(Regex("^(что такое|кто такой|кто такая|кто такие|расскажи про|расскажи о)\\s+"), "").trim()
+                          val u = URL("https://ru.wikipedia.org/w/api.php?action=query&format=json&prop=extracts&exintro=1&explaintext=1&exsentences=2&redirects=1&generator=search&gsrlimit=1&gsrsearch=" + Uri.encode(topic))
+                          val con = u.openConnection() as HttpURLConnection
+                          con.connectTimeout = 8000
+                          con.readTimeout = 8000
+                          con.setRequestProperty("User-Agent", "Jura/1.0")
+                          val body = con.inputStream.bufferedReader().use { it.readText() }
+                          val pages = JSONObject(body).getJSONObject("query").getJSONObject("pages")
+                          val k = pages.keys().next()
+                          out = pages.getJSONObject(k).optString("extract", "").trim()
+                          if (out.isEmpty()) out = "Ничего не нашёл, сэр."
+                      } catch (e: Exception) {
+                          log("Вики: " + e)
+                          out = "Ничего не нашёл, сэр."
+                      }
+                      val res = out.take(500)
+                      h.post { speak(res) }
+                  }.start()
+              }
+
+              private fun nums(c: String): List<Int> {
+                  val out = ArrayList<Int>()
+                  val ws = c.split(" ")
+                  var i = 0
+                  while (i < ws.size) {
+                      val w = ws[i]
+                      val d = w.toIntOrNull()
+                      val v = d ?: numMap[w]
+                      if (v != null) {
+                          if (d == null && v >= 20 && i + 1 < ws.size) {
+                              val nx = numMap[ws[i + 1]]
+                              if (nx != null && nx in 1..9) {
+                                  out.add(v + nx)
+                                  i += 2
+                                  continue
+                              }
+                          }
+                          out.add(v)
+                      }
+                      i++
+                  }
+                  return out
+              }
+
+              private fun pctWord(n: Int): String {
+                  val a = Math.abs(n)
+                  return if (a % 10 == 1 && a % 100 != 11) "процент"
+                  else if (a % 10 in 2..4 && a % 100 !in 12..14) "процента"
+                  else "процентов"
+              }
+
+              private fun sysCmd(c: String): Boolean {
+                  when {
+                      c.contains("фонар") -> torch(!(c.contains("выключ") || c.contains("погас") || c.contains("отключ")))
+                      c.contains("будильник") -> setAlarm(c)
+                      c.contains("таймер") -> setTimer(c)
+                      c.contains("заряд") || c.contains("батаре") -> battery()
+                      c.contains("вайфай") || c.contains("вай фай") || c.contains("wifi") -> openSys(Settings.ACTION_WIFI_SETTINGS, "вайфай")
+                      c.contains("блютуз") || c.contains("блютус") || c.contains("bluetooth") -> openSys(Settings.ACTION_BLUETOOTH_SETTINGS, "блютуз")
+                      else -> return false
+                  }
+                  return true
+              }
+
+              private fun openSys(action: String, name: String) {
+                  speak("Открываю настройки " + name + ", сэр. Включить его без вас Android не позволяет.")
+                  h.postDelayed({
+                      try {
+                          val i = Intent(action)
+                          i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                          startActivity(i)
+                      } catch (e: Exception) { log("Настройки: " + e) }
+                  }, 2500)
+              }
+
+              private fun torch(on: Boolean) {
+                  try {
+                      val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                      var id: String? = null
+                      for (x in cm.cameraIdList) {
+                          val ch = cm.getCameraCharacteristics(x)
+                          if (ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true) {
+                              id = x
+                              break
+                          }
+                      }
+                      if (id == null) {
+                          speak("Фонарика на этом телефоне нет, сэр.")
+                          return
+                      }
+                      cm.setTorchMode(id, on)
+                      speak(if (on) "Фонарик включён, сэр." else "Фонарик выключен, сэр.", false)
+                  } catch (e: Exception) {
+                      log("Фонарик: " + e)
+                      speak("Не удалось управлять фонариком, сэр.")
+                  }
+              }
+
+              private fun battery() {
+                  try {
+                      val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+                      val lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                      speak("Заряд батареи " + lvl + " " + pctWord(lvl) + ", сэр.")
+                  } catch (e: Exception) {
+                      log("Батарея: " + e)
+                      speak("Не удалось узнать заряд, сэр.")
+                  }
+              }
+
+              private fun setAlarm(c: String) {
+                  if (c.contains("отмени") || c.contains("выключ") || c.contains("удали") || c.contains("отключ")) {
+                      speak("Отключить будильник можно только в приложении Часы, сэр.")
+                      return
+                  }
+                  val ns = nums(c)
+                  if (ns.isEmpty()) {
+                      speak("На какое время поставить будильник, сэр? Скажите, например: поставь будильник на семь тридцать.", false)
+                      return
+                  }
+                  var hh = ns[0]
+                  var mm = 0
+                  if (ns.size >= 3 && ns[1] == 0) {
+                      mm = ns[2]
+                  } else if (ns.size >= 2) {
+                      mm = ns[1]
+                  }
+                  if ((c.contains("вечера") || c.contains("дня")) && hh < 12) hh += 12
+                  if (c.contains("ночи") && hh == 12) hh = 0
+                  if (hh !in 0..23 || mm !in 0..59) {
+                      speak("Не понял время, сэр.", false)
+                      return
+                  }
+                  try {
+                      val i = Intent(AlarmClock.ACTION_SET_ALARM)
+                      i.putExtra(AlarmClock.EXTRA_HOUR, hh)
+                      i.putExtra(AlarmClock.EXTRA_MINUTES, mm)
+                      i.putExtra(AlarmClock.EXTRA_MESSAGE, "JURA")
+                      i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      startActivity(i)
+                      speak("Будильник на " + hh + " " + "%02d".format(mm) + " поставлен, сэр.")
+                  } catch (e: Exception) {
+                      log("Будильник: " + e)
+                      speak("Не удалось поставить будильник, сэр.")
+                  }
+              }
+
+              private fun setTimer(c: String) {
+                  val ns = nums(c)
+                  val secs = if (c.contains("полчаса")) {
+                      1800
+                  } else {
+                      val n = if (ns.isEmpty()) 1 else ns[0]
+                      n * (if (c.contains("секунд")) 1 else if (c.contains("час")) 3600 else 60)
+                  }
+                  if (secs !in 1..86400) {
+                      speak("Не понял, на сколько поставить таймер, сэр.", false)
+                      return
+                  }
+                  try {
+                      val i = Intent(AlarmClock.ACTION_SET_TIMER)
+                      i.putExtra(AlarmClock.EXTRA_LENGTH, secs)
+                      i.putExtra(AlarmClock.EXTRA_MESSAGE, "JURA")
+                      i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      startActivity(i)
+                      speak("Таймер поставлен, сэр.")
+                  } catch (e: Exception) {
+                      log("Таймер: " + e)
+                      speak("Не удалось поставить таймер, сэр.")
+                  }
               }
 
               private fun musicOn(): Boolean {
@@ -1233,8 +1774,30 @@ jobs:
               private fun weather(greet: Boolean) {
                   Thread {
                       var msg = ""
+                      val p = prefs()
+                      val city = p.getString("city", "Душанбе") ?: "Душанбе"
                       try {
-                          val u = URL("https://api.open-meteo.com/v1/forecast?latitude=38.5598&longitude=68.7870&current=temperature_2m,weather_code&timezone=auto")
+                          var lat = 38.5598
+                          var lon = 68.7870
+                          if (city != "Душанбе") {
+                              if (p.getString("geo_city", "") == city) {
+                                  lat = (p.getString("lat", "0") ?: "0").toDouble()
+                                  lon = (p.getString("lon", "0") ?: "0").toDouble()
+                              } else {
+                                  val g = URL("https://geocoding-api.open-meteo.com/v1/search?count=1&language=ru&format=json&name=" + Uri.encode(city))
+                                  val gc = g.openConnection() as HttpURLConnection
+                                  gc.connectTimeout = 6000
+                                  gc.readTimeout = 6000
+                                  val gb = gc.inputStream.bufferedReader().use { it.readText() }
+                                  val res = JSONObject(gb).optJSONArray("results")
+                                  if (res == null || res.length() == 0) throw Exception("город не найден")
+                                  val r0 = res.getJSONObject(0)
+                                  lat = r0.getDouble("latitude")
+                                  lon = r0.getDouble("longitude")
+                                  p.edit().putString("geo_city", city).putString("lat", lat.toString()).putString("lon", lon.toString()).apply()
+                              }
+                          }
+                          val u = URL("https://api.open-meteo.com/v1/forecast?latitude=" + lat + "&longitude=" + lon + "&current=temperature_2m,weather_code&timezone=auto")
                           val con = u.openConnection() as HttpURLConnection
                           con.connectTimeout = 6000
                           con.readTimeout = 6000
@@ -1242,12 +1805,13 @@ jobs:
                           val cur = JSONObject(body).getJSONObject("current")
                           val t = Math.round(cur.getDouble("temperature_2m")).toInt()
                           val code = cur.getInt("weather_code")
-                          msg = "В Душанбе сейчас " + tempWord(t) + ", " + codeWord(code) + "."
+                          msg = "Город " + city + ": " + tempWord(t) + ", " + codeWord(code) + "."
                       } catch (e: Exception) {
                           log("Погода: " + e)
                           msg = "Не удалось узнать погоду, сэр."
                       }
-                      val out = if (greet) "Доброе утро, сэр. " + msg else msg
+                      val who = (p.getString("user_name", "") ?: "").ifBlank { "сэр" }
+                      val out = if (greet) "Доброе утро, " + who + ". " + msg else msg
                       h.post { speak(out) }
                   }.start()
               }
@@ -1277,7 +1841,7 @@ jobs:
                   speak(sb.toString())
               }
 
-              private fun callContact(q: String) {
+              private fun findContact(q: String): Pair<String, String>? {
                   val qs = q.split(" ").filter { it.length > 1 }
                   var best: String? = null
                   var bestName = ""
@@ -1312,11 +1876,20 @@ jobs:
                       }
                   } catch (e: Exception) { log("Контакты: " + e) }
                   val num = best
-                  if (num == null) {
+                  return if (num == null) null else Pair(bestName, num)
+              }
+
+              private fun callContact(q: String) {
+                  val f = findContact(q)
+                  if (f == null) {
                       speak("Не нашёл контакт " + q + ", сэр.")
                       return
                   }
-                  speak("Звоню, " + bestName + ", сэр.")
+                  ask("Позвонить " + f.first + "?") { doCall(f.second, f.first) }
+              }
+
+              private fun doCall(num: String, name: String) {
+                  speak("Звоню, " + name + ", сэр.", false)
                   h.postDelayed({
                       try {
                           getSystemService(TelecomManager::class.java).placeCall(Uri.fromParts("tel", num, null), Bundle())
@@ -1325,6 +1898,31 @@ jobs:
                           speak("Не удалось позвонить, сэр.")
                       }
                   }, 1800)
+              }
+
+              private fun smsCmd(nameQ: String, text: String) {
+                  if (checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+                      speak("Нет разрешения на смс, сэр. Откройте настройки и нажмите кнопку один.")
+                      return
+                  }
+                  val f = findContact(nameQ)
+                  if (f == null) {
+                      speak("Не нашёл контакт " + nameQ + ", сэр.")
+                      return
+                  }
+                  ask("Отправить " + f.first + " сообщение: " + text + "?") { doSms(f.second, text) }
+              }
+
+              @Suppress("DEPRECATION")
+              private fun doSms(num: String, text: String) {
+                  try {
+                      val sm: SmsManager = if (Build.VERSION.SDK_INT >= 31) getSystemService(SmsManager::class.java) else SmsManager.getDefault()
+                      sm.sendMultipartTextMessage(num, null, sm.divideMessage(text), null, null)
+                      speak("Сообщение отправлено, сэр.", false)
+                  } catch (e: Exception) {
+                      log("СМС: " + e)
+                      speak("Не удалось отправить сообщение, сэр.")
+                  }
               }
 
               private fun openApp(q0: String) {
@@ -1382,7 +1980,7 @@ jobs:
                   log("Служба остановлена")
                   running = false
                   setState("stopped", "")
-                  try { getSharedPreferences("jura", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(prefListener) } catch (e: Exception) {}
+                  try { prefs().unregisterOnSharedPreferenceChangeListener(prefListener) } catch (e: Exception) {}
                   h.removeCallbacksAndMessages(null)
                   stopMusic()
                   try { svc?.stop() } catch (e: Exception) {}
