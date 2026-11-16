@@ -176,11 +176,105 @@ jobs:
 
           import android.content.Context
           import android.net.Uri
+          import org.json.JSONArray
           import org.json.JSONObject
           import java.net.HttpURLConnection
           import java.net.URL
 
-          class AiErr(m: String) : Exception(m)
+          class AiErr(m: String, val detail: String = "") : Exception(m)
+
+          object Ai {
+              fun clean(k: String): String {
+                  return k.trim().trim('"', '\'', '`').replace(" ", "").replace("\n", "").replace("\r", "")
+              }
+
+              private fun errText(body: String): String {
+                  val m = try {
+                      JSONObject(body).getJSONObject("error").optString("message", body)
+                  } catch (e: Exception) {
+                      body
+                  }
+                  return m.take(200)
+              }
+
+              fun gemini(c: Context, key0: String, sys: String, hist: JSONArray, q: String): String {
+                  val key = clean(key0)
+                  val contents = JSONArray()
+                  for (i in 0 until hist.length()) {
+                      val m = hist.getJSONObject(i)
+                      val role = if (m.getString("role") == "user") "user" else "model"
+                      contents.put(JSONObject().put("role", role).put("parts", JSONArray().put(JSONObject().put("text", m.getString("content")))))
+                  }
+                  contents.put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", q))))
+                  val models = listOf("gemini-flash-latest", "gemini-3.8-flash", "gemini-2.5-flash")
+                  var lastCode = 0
+                  var lastBody = ""
+                  var lastModel = ""
+                  for (model in models) {
+                      var stop = false
+                      for (attempt in 0..1) {
+                          val gen = JSONObject().put("maxOutputTokens", 1024)
+                          if (attempt == 0) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
+                          val body = JSONObject()
+                              .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
+                              .put("contents", contents)
+                              .put("generationConfig", gen)
+                          val con = URL("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent").openConnection() as HttpURLConnection
+                          con.requestMethod = "POST"
+                          con.connectTimeout = 10000
+                          con.readTimeout = 30000
+                          con.doOutput = true
+                          con.setRequestProperty("Content-Type", "application/json")
+                          con.setRequestProperty("x-goog-api-key", key)
+                          con.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                          val code = con.responseCode
+                          if (code == 200) {
+                              val txt = con.inputStream.bufferedReader().use { it.readText() }
+                              val parts = JSONObject(txt).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts")
+                              val sb = StringBuilder()
+                              for (i in 0 until parts.length()) sb.append(parts.getJSONObject(i).optString("text", ""))
+                              val a = sb.toString().trim()
+                              if (a.isEmpty()) throw AiErr("ИИ промолчал, сэр. Спросите иначе.", "пустой ответ, модель " + model)
+                              return a
+                          }
+                          val err = try { con.errorStream?.bufferedReader()?.use { it.readText() } ?: "" } catch (e: Exception) { "" }
+                          lastCode = code
+                          lastBody = err
+                          lastModel = model
+                          JuraService.writeLog(c, "Gemini " + model + " код " + code + ": " + err.take(150))
+                          if (code == 401 || err.contains("API key not valid") || err.contains("API_KEY_INVALID") || err.contains("FAILED_PRECONDITION")) {
+                              stop = true
+                              break
+                          }
+                          if (code == 400 && attempt == 0 && !err.contains("API key")) continue
+                          break
+                      }
+                      if (stop) break
+                  }
+                  val detail = "модель " + lastModel + ", код " + lastCode + ": " + errText(lastBody)
+                  val msg = when {
+                      lastCode == 401 || lastBody.contains("API key not valid") || lastBody.contains("API_KEY_INVALID") -> "Ключ Gemini не подошёл, сэр. Проверьте его в настройках."
+                      lastBody.contains("FAILED_PRECONDITION") -> "В вашей стране бесплатный доступ к Gemini недоступен, сэр."
+                      lastCode == 403 || lastBody.contains("blocked") -> "Gemini не разрешает этот ключ, сэр. Создайте новый ключ в AI Studio."
+                      lastCode == 429 -> "Бесплатный лимит Gemini на сейчас исчерпан, сэр. Попробуйте позже."
+                      else -> "ИИ не ответил, сэр. Код " + lastCode + "."
+                  }
+                  throw AiErr(msg, detail)
+              }
+
+              fun test(c: Context, key: String): String {
+                  if (key.isBlank()) return "Ключ не введён."
+                  if (key.startsWith("sk-ant")) return "Это ключ Claude. Проверка работает только для ключа Gemini."
+                  return try {
+                      val a = gemini(c, key, "Отвечай одним словом.", JSONArray(), "Скажи слово: привет")
+                      "Работает! Ответ ИИ: " + a.take(80)
+                  } catch (e: AiErr) {
+                      "Ошибка: " + e.message + "\n" + e.detail
+                  } catch (e: Exception) {
+                      "Нет связи с Google: " + e
+                  }
+              }
+          }
 
           object Wx {
               private fun tempWord(t: Int): String {
@@ -1007,15 +1101,25 @@ jobs:
                   head("Личное")
                   val fName = field("Ваше имя", "user_name", false)
                   val fCity = field("Город для погоды (по умолчанию Душанбе)", "city", false)
-                  val fKey = field("Ключ ИИ: Gemini (AIza...) или Claude (sk-ant-...)", "ai_key", true)
-                  note("Бесплатный ключ Gemini: aistudio.google.com → Get API key → Create API key. Ключ хранится только на этом телефоне. Google может использовать запросы бесплатного плана для улучшения своих продуктов, поэтому не говорите ИИ пароли и личные тайны. Без ключа Джура отвечает на «что такое...» из Википедии.")
+                  val fKey = field("Ключ ИИ: Gemini (AQ... или AIza...) или Claude (sk-ant-...)", "ai_key", true)
+                  note("Бесплатный ключ Gemini: aistudio.google.com/apikey → Create API key. Ключ хранится только на этом телефоне и никому его не показывайте. Google может использовать запросы бесплатного плана для улучшения своих продуктов, поэтому не говорите ИИ пароли и личные тайны. Без ключа Джура отвечает на «что такое...» из Википедии.")
+                  val aiView = note("")
                   btn("Сохранить") {
                       sp.edit()
                           .putString("user_name", fName.text.toString().trim())
                           .putString("city", fCity.text.toString().trim().ifEmpty { "Душанбе" })
-                          .putString("ai_key", fKey.text.toString().trim())
+                          .putString("ai_key", Ai.clean(fKey.text.toString()))
                           .apply()
                       Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
+                  }
+                  btn("Проверить ИИ") {
+                      val k = Ai.clean(fKey.text.toString())
+                      sp.edit().putString("ai_key", k).apply()
+                      aiView.text = "Проверяю..."
+                      Thread {
+                          val res = Ai.test(this, k)
+                          runOnUiThread { aiView.text = res }
+                      }.start()
                   }
 
                   head("Умный будильник")
@@ -1695,7 +1799,7 @@ jobs:
               }
 
               private fun hasKey(): Boolean {
-                  return (prefs().getString("ai_key", "") ?: "").isNotBlank()
+                  return Ai.clean(prefs().getString("ai_key", "") ?: "").isNotBlank()
               }
 
               private fun loadHistory(): JSONArray {
@@ -1722,7 +1826,7 @@ jobs:
               }
 
               private fun askAi(q: String) {
-                  val key = (prefs().getString("ai_key", "") ?: "").trim()
+                  val key = Ai.clean(prefs().getString("ai_key", "") ?: "")
                   busy("Думаю", q)
                   Thread {
                       var out = ""
@@ -1736,10 +1840,11 @@ jobs:
                           sys.append("Его город: ").append(city).append(". Сейчас ").append(SimpleDateFormat("d MMMM yyyy, EEEE, HH:mm", ru).format(Date())).append(". ")
                           if (notes.isNotBlank()) sys.append("Что пользователь просил запомнить: ").append(notes.replace("\n", "; ")).append(". ")
                           val hist = loadHistory()
-                          val a = if (key.startsWith("sk-ant")) callClaude(key, sys.toString(), hist, q) else callGemini(key, sys.toString(), hist, q)
+                          val a = if (key.startsWith("sk-ant")) callClaude(key, sys.toString(), hist, q) else Ai.gemini(this, key, sys.toString(), hist, q)
                           saveHistory(hist, q, a)
                           out = a
                       } catch (e: AiErr) {
+                          log("ИИ: " + e.message + " | " + e.detail)
                           out = e.message ?: "ИИ не ответил, сэр."
                       } catch (e: Exception) {
                           log("ИИ: " + e)
@@ -1748,61 +1853,6 @@ jobs:
                       val res = out
                       h.post { speak(res) }
                   }.start()
-              }
-
-              private fun callGemini(key: String, sys: String, hist: JSONArray, q: String): String {
-                  val contents = JSONArray()
-                  for (i in 0 until hist.length()) {
-                      val m = hist.getJSONObject(i)
-                      val role = if (m.getString("role") == "user") "user" else "model"
-                      contents.put(JSONObject().put("role", role).put("parts", JSONArray().put(JSONObject().put("text", m.getString("content")))))
-                  }
-                  contents.put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", q))))
-                  val models = listOf("gemini-3.8-flash", "gemini-2.5-flash")
-                  var lastCode = 0
-                  var lastBody = ""
-                  for (model in models) {
-                      for (attempt in 0..1) {
-                          val gen = JSONObject().put("maxOutputTokens", 1024)
-                          if (attempt == 0) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
-                          val body = JSONObject()
-                              .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
-                              .put("contents", contents)
-                              .put("generationConfig", gen)
-                          val con = URL("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent").openConnection() as HttpURLConnection
-                          con.requestMethod = "POST"
-                          con.connectTimeout = 10000
-                          con.readTimeout = 30000
-                          con.doOutput = true
-                          con.setRequestProperty("content-type", "application/json")
-                          con.setRequestProperty("x-goog-api-key", key)
-                          con.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-                          val code = con.responseCode
-                          if (code == 200) {
-                              val txt = con.inputStream.bufferedReader().use { it.readText() }
-                              val parts = JSONObject(txt).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts")
-                              val sb = StringBuilder()
-                              for (i in 0 until parts.length()) sb.append(parts.getJSONObject(i).optString("text", ""))
-                              val a = sb.toString().trim()
-                              if (a.isEmpty()) throw AiErr("ИИ промолчал, сэр. Спросите иначе.")
-                              return a
-                          }
-                          val err = try { con.errorStream?.bufferedReader()?.use { it.readText() } ?: "" } catch (e: Exception) { "" }
-                          lastCode = code
-                          lastBody = err
-                          log("Gemini " + model + " код " + code + ": " + err.take(200))
-                          if (code == 400 && attempt == 0 && !err.contains("API key") && !err.contains("FAILED_PRECONDITION")) continue
-                          break
-                      }
-                      if (lastCode != 404) break
-                  }
-                  val msg = when {
-                      lastBody.contains("API key not valid") || lastBody.contains("API_KEY_INVALID") -> "Ключ Gemini не подошёл, сэр. Проверьте его в настройках."
-                      lastBody.contains("FAILED_PRECONDITION") -> "В вашей стране бесплатный доступ к Gemini недоступен, сэр."
-                      lastCode == 429 -> "Бесплатный лимит Gemini на сейчас исчерпан, сэр. Попробуйте позже."
-                      else -> "ИИ не ответил, сэр. Код " + lastCode + "."
-                  }
-                  throw AiErr(msg)
               }
 
               private fun callClaude(key: String, sys: String, hist: JSONArray, q: String): String {
@@ -2002,56 +2052,4 @@ jobs:
               private fun battery() {
                   try {
                       val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-                      val lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                      speak("Заряд батареи " + lvl + " " + pctWord(lvl) + ", сэр.")
-                  } catch (e: Exception) {
-                      log("Батарея: " + e)
-                      speak("Не удалось узнать заряд, сэр.")
-                  }
-              }
-
-              private fun setAlarm(c: String) {
-                  if (c.contains("отмени") || c.contains("выключ") || c.contains("удали") || c.contains("отключ")) {
-                      speak("Отключить будильник можно только в приложении Часы, сэр.")
-                      return
-                  }
-                  val hm = parseHm(c)
-                  if (hm == null) {
-                      speak("На какое время поставить будильник, сэр? Скажите, например: поставь будильник на семь тридцать.", false)
-                      return
-                  }
-                  val hh = hm.first
-                  val mm = hm.second
-                  try {
-                      val i = Intent(AlarmClock.ACTION_SET_ALARM)
-                      i.putExtra(AlarmClock.EXTRA_HOUR, hh)
-                      i.putExtra(AlarmClock.EXTRA_MINUTES, mm)
-                      i.putExtra(AlarmClock.EXTRA_MESSAGE, "JURA")
-                      i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
-                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                      startActivity(i)
-                      speak("Будильник на " + hh + " " + "%02d".format(mm) + " поставлен, сэр.")
-                  } catch (e: Exception) {
-                      log("Будильник: " + e)
-                      speak("Не удалось поставить будильник, сэр.")
-                  }
-              }
-
-              private fun setTimer(c: String) {
-                  val ns = nums(c)
-                  val secs = if (c.contains("полчаса")) {
-                      1800
-                  } else {
-                      val n = if (ns.isEmpty()) 1 else ns[0]
-                      n * (if (c.contains("секунд")) 1 else if (c.contains("час")) 3600 else 60)
-                  }
-                  if (secs !in 1..86400) {
-                      speak("Не понял, на сколько поставить таймер, сэр.", false)
-                      return
-                  }
-                  try {
-                      val i = Intent(AlarmClock.ACTION_SET_TIMER)
-                      i.putExtra(AlarmClock.EXTRA_LENGTH, secs)
-                      i.putExtra(AlarmClock.EXTRA_MESSAGE, "JURA")
-                      i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
-                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_
+                      val lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERT
